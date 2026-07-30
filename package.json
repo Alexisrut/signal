@@ -1,0 +1,10 @@
+{
+  "name": "signal-monitor",
+  "version": "1.0.0",
+  "description": "Система мониторинга сигналов: подрядчики, администраторы, автоэскалация статусов",
+  "type": "commonjs",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
