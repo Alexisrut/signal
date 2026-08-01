@@ -2,9 +2,15 @@
   "name": "signal-monitor",
   "version": "1.0.0",
   "description": "Система мониторинга сигналов: подрядчики, администраторы, автоэскалация статусов",
-  "type": "commonjs",
+  "type": "module",
   "private": true,
   "scripts": {
-    "start": "node server.js"
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "busboy": "^1.6.0",
+    "exceljs": "^4.4.0",
+    "node-sqlite3-wasm": "^0.8.60",
+    "nodemailer": "^9.0.3"
   }
 }
