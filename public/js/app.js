@@ -112,6 +112,9 @@ async function bootstrap() {
   setInterval(() => router.refreshIfLive(), UI_TICK_MS);
 
   router.start();
+
+  // Сигнал сторожу загрузки в index.html: приложение поднялось, диагностика не нужна.
+  window.__signalMonitorBooted = true;
 }
 
 function accessKey() {
@@ -120,6 +123,9 @@ function accessKey() {
 }
 
 bootstrap().catch((error) => {
+  // Модуль выполнился, значит искать ненайденные файлы бессмысленно —
+  // показываем собственное сообщение и глушим сторож.
+  window.__signalMonitorBooted = true;
   console.error('[app] критическая ошибка запуска', error);
   document.getElementById('app').innerHTML =
     '<section class="page"><h1 class="page__title">Не удалось запустить приложение</h1>' +

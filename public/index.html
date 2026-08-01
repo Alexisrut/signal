@@ -15,6 +15,120 @@
       <span>Серверная эскалация (порог 48 часов) · live-синхронизация через SSE · SQL-хранилище</span>
     </footer>
     <div class="toast-host" id="toast"></div>
+
+    <noscript>
+      <div style="padding: 32px; text-align: center; color: #8b99ab">
+        Для работы приложения нужен включенный JavaScript.
+      </div>
+    </noscript>
+
+    <!--
+      Сторож загрузки. Намеренно классический скрипт на ES5: он должен выполниться
+      даже там, где основной ES-модуль не загрузился или не разобрался — иначе на
+      телефоне такой сбой выглядит как пустой экран без единой подсказки.
+      Если через 6 секунд приложение не сообщило о запуске, сторож обходит граф
+      импортов и показывает, какой именно файл не отдается.
+    -->
+    <script>
+      (function () {
+        var problems = [];
+
+        window.addEventListener(
+          'error',
+          function (event) {
+            var target = event.target;
+            if (target && target !== window && (target.src || target.href)) {
+              problems.push('не загрузился ресурс: ' + (target.src || target.href));
+            } else if (event.message) {
+              problems.push(event.message + (event.filename ? ' — ' + event.filename + ':' + event.lineno : ''));
+            }
+          },
+          true
+        );
+
+        window.addEventListener('unhandledrejection', function (event) {
+          var reason = event.reason;
+          problems.push('ошибка: ' + (reason && reason.message ? reason.message : String(reason)));
+        });
+
+        function scan(url, seen, broken, depth) {
+          if (depth > 4 || seen[url]) return Promise.resolve();
+          seen[url] = true;
+
+          return fetch(url, { cache: 'no-store' })
+            .then(function (response) {
+              if (!response.ok) {
+                broken.push(response.status + ' ' + url.replace(location.origin, ''));
+                return null;
+              }
+              // Файл может отдаваться со статусом 200, но не как скрипт —
+              // тогда браузер отвергает модуль по MIME-типу.
+              var type = response.headers.get('content-type') || '';
+              if (type.indexOf('javascript') === -1) {
+                broken.push('не скрипт (' + type.split(';')[0] + '): ' + url.replace(location.origin, ''));
+                return null;
+              }
+              return response.text().then(function (source) {
+                var pattern = /(?:import|export)[^'"()]*from\s*['"]([^'"]+)['"]/g;
+                var jobs = [];
+                var match;
+                while ((match = pattern.exec(source))) {
+                  var spec = match[1];
+                  if (spec.charAt(0) !== '.' && spec.charAt(0) !== '/') continue;
+                  jobs.push(scan(new URL(spec, url).href, seen, broken, depth + 1));
+                }
+                return Promise.all(jobs);
+              });
+            })
+            .catch(function () {
+              broken.push('недоступен ' + url.replace(location.origin, ''));
+            });
+        }
+
+        function report(broken) {
+          var app = document.getElementById('app');
+          if (!app) return;
+
+          var lines = broken.concat(problems);
+          var details = lines.length
+            ? lines
+                .slice(0, 6)
+                .map(function (line) {
+                  return '<li style="margin:4px 0">' + String(line).replace(/</g, '&lt;') + '</li>';
+                })
+                .join('')
+            : '<li style="margin:4px 0">Точную причину определить не удалось.</li>';
+
+          app.innerHTML =
+            '<section style="max-width:560px;margin:40px auto;padding:24px;border:1px solid #35455a;' +
+            'border-radius:14px;background:#161d28;color:#e7edf4;font-family:-apple-system,Segoe UI,Arial,sans-serif">' +
+            '<h1 style="margin:0 0 10px;font-size:20px">Приложение не запустилось</h1>' +
+            '<p style="margin:0 0 14px;color:#8b99ab;font-size:14px">' +
+            'Интерфейс рисуется скриптами, а они не загрузились. Что не так:</p>' +
+            '<ul style="margin:0 0 16px;padding-left:20px;font-size:13px;color:#ff9c8c;' +
+            'font-family:ui-monospace,Menlo,monospace;word-break:break-all">' +
+            details +
+            '</ul>' +
+            '<button type="button" onclick="location.reload()" style="padding:12px 18px;border-radius:10px;' +
+            'border:none;background:#4f8cff;color:#06121f;font-weight:700;font-size:15px;width:100%">' +
+            'Обновить страницу</button>' +
+            '<p style="margin:14px 0 0;color:#5f6c7e;font-size:11px;word-break:break-all">' +
+            navigator.userAgent +
+            '</p>' +
+            '</section>';
+        }
+
+        setTimeout(function () {
+          if (window.__signalMonitorBooted) return;
+
+          var broken = [];
+          scan(new URL('./js/app.js', location.href).href, {}, broken, 0).then(function () {
+            report(broken);
+          });
+        }, 6000);
+      })();
+    </script>
+
     <script type="module" src="./js/app.js"></script>
   </body>
 </html>

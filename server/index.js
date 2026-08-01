@@ -101,8 +101,13 @@ const server = http.createServer(async (req, res) => {
       // Общие с браузером модули предметной области.
       if (pathname.startsWith('/shared/') && serveStatic(res, SHARED_DIR, pathname.slice('/shared/'.length))) return;
       if (serveStatic(res, PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname.slice(1))) return;
-      // SPA-фолбэк: любой неизвестный путь отдает оболочку приложения.
-      if (!pathname.startsWith('/api/') && serveStatic(res, PUBLIC_DIR, 'index.html')) return;
+
+      // SPA-фолбэк отдает оболочку приложения на неизвестный путь, но НЕ на путь
+      // с расширением: иначе пропавший .js возвращается как HTML со статусом 200,
+      // браузер молча отвергает модуль по MIME-типу, и вместо ошибки видно
+      // пустую страницу. Ассеты должны честно отвечать 404.
+      const looksLikeAsset = /\.[a-z0-9]+$/i.test(pathname);
+      if (!looksLikeAsset && !pathname.startsWith('/api/') && serveStatic(res, PUBLIC_DIR, 'index.html')) return;
     }
 
     throw new HttpError(404, 'Не найдено');
