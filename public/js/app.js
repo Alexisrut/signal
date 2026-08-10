@@ -5,7 +5,15 @@
 
 import * as store from './data/store.js';
 import { UI_TICK_MS } from '/shared/constants.js';
-import { isVerifiedAdmin, isAdmin, isPendingVerification, tasksEnabled } from './domain/session.js';
+import {
+  isAuthenticated,
+  isContractor,
+  isSuperadmin,
+  isVerifiedAdmin,
+  isAdmin,
+  isPendingVerification,
+  currentActor,
+} from './domain/session.js';
 
 import { createRouter } from './ui/router.js';
 import { renderHeader } from './ui/chrome.js';
@@ -13,56 +21,72 @@ import { html } from './core/utils.js';
 import { emptyState } from './ui/components.js';
 
 import { homeView } from './ui/views/home.js';
-import { chooseLineView, signalFormView } from './ui/views/new-signal.js';
+import { newSignalView } from './ui/views/new-signal.js';
 import { mySignalsView, mySignalView } from './ui/views/my-signals.js';
-import { adminLoginView } from './ui/views/admin-login.js';
+import { loginView, landingFor } from './ui/views/login.js';
+import { registerView } from './ui/views/register.js';
 import { adminDashboardView } from './ui/views/admin-dashboard.js';
+import { distributionView } from './ui/views/distribution.js';
 import { adminSignalView } from './ui/views/admin-signal.js';
 import { adminUsersView } from './ui/views/admin-users.js';
-import { adminProfileView } from './ui/views/admin-profile.js';
 import { verifyPendingView } from './ui/views/verify-pending.js';
-import { tasksDashboardView, taskFormView, taskDetailView } from './ui/views/tasks.js';
+import { editSignalView } from './ui/views/edit-signal.js';
 
-/** Панель доступна только подтвержденному администратору. */
+/** Любой раздел, кроме входа и регистрации, требует учетной записи. */
+function requireAuth() {
+  return isAuthenticated() ? null : '/login';
+}
+
+/** Сигналы создает и ведет подрядчик. */
+function requireContractor() {
+  const redirect = requireAuth();
+  if (redirect) return redirect;
+  return isContractor() ? null : '/admin';
+}
+
+/** Панель доступна только администратору с подтвержденной почтой. */
 function requireAdmin() {
   if (isVerifiedAdmin()) return null;
   if (isPendingVerification()) return '/admin/verify';
-  return '/admin/login';
+  return isAuthenticated() ? '/' : '/login';
 }
 
-/** Модуль задач вдобавок управляется флагом в настройках профиля. */
-function requireTasks() {
+/** Распределение и учетные записи — зона главного администратора. */
+function requireSuperadmin() {
   const redirect = requireAdmin();
   if (redirect) return redirect;
-  return tasksEnabled() ? null : '/admin/profile';
+  return isSuperadmin() ? null : '/admin';
 }
 
 const routes = [
   { path: '/', view: homeView },
-  { path: '/new', view: chooseLineView },
-  { path: '/new/form', view: signalFormView },
-  { path: '/my', view: mySignalsView },
-  { path: '/my/:id', view: mySignalView },
 
   {
-    path: '/admin/login',
-    view: adminLoginView,
-    guard: () => (isVerifiedAdmin() ? '/admin' : isPendingVerification() ? '/admin/verify' : null),
+    path: '/login',
+    view: loginView,
+    guard: () => (isAuthenticated() ? landingFor(currentActor()) : null),
   },
+  {
+    path: '/register',
+    view: registerView,
+    guard: () => (isAuthenticated() ? landingFor(currentActor()) : null),
+  },
+
+  { path: '/new', view: newSignalView, guard: requireContractor },
+  { path: '/my', view: mySignalsView, guard: requireContractor },
+  { path: '/my/:id', view: mySignalView, guard: requireContractor },
+  { path: '/my/:id/edit', view: editSignalView, guard: requireContractor },
+
   {
     path: '/admin/verify',
     view: verifyPendingView,
-    guard: () => (isAdmin() ? (isVerifiedAdmin() ? '/admin' : null) : '/admin/login'),
+    guard: () => (isAdmin() ? (isVerifiedAdmin() ? '/admin' : null) : '/login'),
   },
   { path: '/admin', view: adminDashboardView, guard: requireAdmin },
+  { path: '/admin/distribution', view: distributionView, guard: requireSuperadmin },
   { path: '/admin/signal/:id', view: adminSignalView, guard: requireAdmin },
-  { path: '/admin/users', view: adminUsersView, guard: requireAdmin },
-  { path: '/admin/profile', view: adminProfileView, guard: requireAdmin },
-
-  // Порядок важен: конкретный '/tasks/new' должен проверяться раньше '/tasks/:id'.
-  { path: '/tasks', view: tasksDashboardView, guard: requireTasks },
-  { path: '/tasks/new', view: taskFormView, guard: requireTasks },
-  { path: '/tasks/:id', view: taskDetailView, guard: requireTasks },
+  { path: '/admin/signal/:id/edit', view: editSignalView, guard: requireAdmin },
+  { path: '/admin/users', view: adminUsersView, guard: requireSuperadmin },
 ];
 
 const notFoundView = {
@@ -94,8 +118,8 @@ async function bootstrap() {
   });
 
   // LIVE-режим: сервер сообщил об изменении → состояние перечитано → экран перерисован.
-  // Смена прав (вход, выход, подтверждение почты, переключение модуля задач)
-  // требует переоценки guard-ов, поэтому маршрут разрешается заново.
+  // Смена прав (вход, выход, подтверждение почты, выданные категории) требует
+  // переоценки guard-ов, поэтому маршрут разрешается заново.
   let previousAccess = accessKey();
   store.subscribe(() => {
     const key = accessKey();
@@ -119,7 +143,7 @@ async function bootstrap() {
 
 function accessKey() {
   const actor = store.getState().actor;
-  return [actor?.id, actor?.role, actor?.isEmailVerified, actor?.settings?.tasksDashboardEnabled].join('|');
+  return [actor?.id, actor?.role, actor?.isEmailVerified, (actor?.categories ?? []).join(',')].join('|');
 }
 
 bootstrap().catch((error) => {

@@ -3,3 +3,13 @@
 # из-за чего клиент перестает собираться (падает импорт data/store.js).
 /node_modules/
 /data/
+
+# Секреты почты и прочие локальные настройки. Шаблон — в .env.example.
+.env
+.env.local
+
+# Промежуточные файлы записи туториала (кадры и временная база).
+# Сам ролик tutorial/*.mp4 остается в репозитории.
+/tutorial/frames/
+/tutorial/data/
+/tutorial/frames.txt

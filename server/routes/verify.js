@@ -2,7 +2,7 @@
 
 import { sendHtml } from '../http.js';
 import { createSession } from '../identity.js';
-import { verifyEmailToken } from '../domain/admins.js';
+import { verifyEmailToken } from '../domain/users.js';
 
 function page({ title, tone, message, actions }) {
   const accent = tone === 'ok' ? '#35c46a' : '#f2543d';

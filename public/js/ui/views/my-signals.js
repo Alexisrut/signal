@@ -4,19 +4,20 @@
  */
 
 import { html, formatDateTime, truncate } from '../../core/utils.js';
-import { STATUS, STATUS_META, STATUS_ORDER, lineLabel } from '/shared/constants.js';
-import { canTransition } from '/shared/state-machine.js';
+import { STATUS, STATUS_META, STATUS_ORDER, categoryLabel } from '/shared/constants.js';
+import { canEdit, canTransition } from '/shared/state-machine.js';
 import { currentActor } from '../../domain/session.js';
 import { listMine, findMine, changeStatus, countByStatus } from '../../domain/signals.js';
 import {
   statusBadge,
-  lineTag,
+  categoryTag,
   historyList,
   emptyState,
   escalationHint,
   ageLabel,
   attachmentsList,
   attachmentsBadge,
+  assigneeChip,
 } from '../components.js';
 import { showToast } from '../chrome.js';
 
@@ -66,8 +67,8 @@ export const mySignalsView = {
       return html`<article class="row row--${signal.status}">
         <div class="row__main">
           <div class="row__head">
-            ${[statusBadge(signal.status, { withHint: true })]} ${[lineTag(signal.line)]}
-            ${[attachmentsBadge(signal.attachments)]}
+            ${[statusBadge(signal.status, { withHint: true })]} ${[categoryTag(signal.category)]}
+            ${[assigneeChip(signal)]} ${[attachmentsBadge(signal.attachments)]}
             <span class="row__age">Возраст: ${ageLabel(signal, now)}</span>
           </div>
           <h3 class="row__title">${signal.contractorName} · ${signal.sector}</h3>
@@ -80,6 +81,11 @@ export const mySignalsView = {
         </div>
         <div class="row__actions">
           <a class="btn btn--ghost btn--sm" href="#/my/${signal.id}">Подробнее</a>
+          ${[
+            canEdit(signal, actor).allowed
+              ? html`<a class="btn btn--ghost btn--sm" href="#/my/${signal.id}/edit">Изменить</a>`
+              : '',
+          ]}
           ${[
             canResolve
               ? html`<button class="btn btn--success btn--sm" data-resolve="${signal.id}">Проблема решена</button>`
@@ -142,19 +148,31 @@ export const mySignalView = {
 
     return html`
       <section class="page">
-        <a class="link link--back" href="#/my">← Мои сигналы</a>
+        <div class="page__crumbs">
+          <a class="link link--back" href="#/my">← Мои сигналы</a>
+          ${[
+            canEdit(signal, actor).allowed
+              ? html`<a class="btn btn--secondary btn--sm" href="#/my/${signal.id}/edit">Редактировать</a>`
+              : '',
+          ]}
+        </div>
 
         <article class="detail detail--${signal.status}">
           <header class="detail__head">
             <div class="detail__badges">
-              ${[statusBadge(signal.status, { withHint: true })]} ${[lineTag(signal.line)]}
+              ${[statusBadge(signal.status, { withHint: true })]} ${[categoryTag(signal.category)]}
+              ${[assigneeChip(signal, { compact: false })]}
             </div>
             <h1 class="detail__title">${signal.contractorName}</h1>
             <p class="detail__subtitle">Сектор: ${signal.sector}</p>
           </header>
 
           <dl class="detail__facts">
-            <div><dt>Линия</dt><dd>${lineLabel(signal.line)}</dd></div>
+            <div>
+              <dt>Исполнители</dt>
+              <dd>${signal.assignees.map((person) => person.name).join(', ') || 'никто не принял в работу'}</dd>
+            </div>
+            <div><dt>Категория</dt><dd>${categoryLabel(signal.category)}</dd></div>
             <div><dt>Создан</dt><dd>${formatDateTime(signal.createdAt)}</dd></div>
             <div><dt>Обновлен</dt><dd>${formatDateTime(signal.updatedAt)}</dd></div>
             <div><dt>Возраст</dt><dd>${ageLabel(signal, now)}</dd></div>
@@ -193,8 +211,8 @@ export const mySignalView = {
           </div>
 
           <div class="detail__section">
-            <h2>История статусов</h2>
-            ${[historyList(signal)]}
+            <h2>История событий</h2>
+            ${[historyList(signal.history)]}
           </div>
         </article>
       </section>

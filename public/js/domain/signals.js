@@ -5,16 +5,21 @@
 
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
-import { LINE, STATUS } from '/shared/constants.js';
+import { ASSIGNMENT, STATUS } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 
 export function listMine() {
   return store.getState().mySignals ?? [];
 }
 
-/** Все сигналы системы — только для подтвержденного администратора (иначе null). */
+/** Все доступные администратору сигналы (иначе null). */
 export function listAll() {
   return store.getState().allSignals;
+}
+
+/** Раздел «Распределение» — только для главного администратора (иначе null). */
+export function listUndistributed() {
+  return store.getState().undistributed;
 }
 
 export function findMine(id) {
@@ -22,18 +27,26 @@ export function findMine(id) {
 }
 
 export function findAny(id) {
-  return (listAll() ?? []).find((signal) => signal.id === id) ?? findMine(id);
+  const pools = [listAll() ?? [], listUndistributed() ?? []];
+  for (const pool of pools) {
+    const found = pool.find((signal) => signal.id === id);
+    if (found) return found;
+  }
+  return findMine(id);
 }
 
 export function authorLabel(signalId) {
   return store.getState().authorLabels?.[signalId] ?? '—';
 }
 
-export function filterSignals(signals, { line = 'all', status = 'all' } = {}) {
+export function filterSignals(signals, { category = 'all', status = 'all', assignment = ASSIGNMENT.ALL } = {}) {
   return signals.filter((signal) => {
-    const lineOk = line === 'all' || (line === 'none' ? signal.line === LINE.NONE : signal.line === line);
+    const categoryOk =
+      category === 'all' || (category === 'none' ? !signal.category : signal.category === category);
     const statusOk = status === 'all' || (status === 'active' ? isActive(signal.status) : signal.status === status);
-    return lineOk && statusOk;
+    const taken = (signal.assignees ?? []).length > 0;
+    const assignmentOk = assignment === ASSIGNMENT.ALL || (assignment === ASSIGNMENT.ASSIGNED ? taken : !taken);
+    return categoryOk && statusOk && assignmentOk;
   });
 }
 
@@ -53,6 +66,29 @@ export async function createSignal(input) {
 
 export async function changeStatus(id, status) {
   const result = await api.changeSignalStatus(id, status);
+  await store.refresh();
+  return result.signal;
+}
+
+export async function updateSignal(id, input) {
+  const result = await api.updateSignal(id, input);
+  await store.refresh();
+  return result.signal;
+}
+
+/** Назначить категорию — действие раздела «Распределение». */
+export async function distribute(id, category) {
+  const result = await api.distributeSignal(id, category);
+  await store.refresh();
+  return result.signal;
+}
+
+/**
+ * Принять в работу (`assign = true`) или снять исполнителя.
+ * `userId` позволяет администратору снять коллегу, а не только себя.
+ */
+export async function setAssignee(id, assign, userId) {
+  const result = await api.assignSignal(id, assign, userId);
   await store.refresh();
   return result.signal;
 }

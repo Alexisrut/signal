@@ -22,10 +22,35 @@ const transport = SMTP_CONFIGURED
       port: SMTP.port,
       secure: SMTP.secure,
       auth: SMTP.user ? { user: SMTP.user, pass: SMTP.pass } : undefined,
+      // Без таймаутов зависший SMTP подвешивает и HTTP-запрос, который его ждет
+      // (создание администратора отправляет письмо синхронно с ответом).
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
     })
   : nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
 
 export const deliveryMode = SMTP_CONFIGURED ? 'smtp' : 'dev-inbox';
+
+/**
+ * Проверка учетных данных при старте: без нее ошибка авторизации всплывет
+ * только при первом письме, и то в журнале. Ничего не отправляет.
+ */
+export function verifyTransport() {
+  if (!SMTP_CONFIGURED) return Promise.resolve({ ok: true, mode: deliveryMode });
+
+  return transport
+    .verify()
+    .then(() => {
+      console.log(`  SMTP ${SMTP.host}:${SMTP.port} — авторизация прошла, письма уходят с ${SMTP.from}`);
+      return { ok: true, mode: deliveryMode };
+    })
+    .catch((error) => {
+      console.error(`  SMTP ${SMTP.host}:${SMTP.port} — НЕ подключиться: ${error.message}`);
+      console.error('  Письма отправляться не будут. Проверьте SMTP_USER и пароль для внешних приложений.');
+      return { ok: false, mode: deliveryMode, error: error.message };
+    });
+}
 
 function safeSlug(value) {
   return String(value).replace(/[^a-z0-9._-]+/gi, '_').slice(0, 60);
@@ -63,6 +88,12 @@ export async function sendMail(message) {
       const file = path.join(MAILBOX_DIR, `${createdAt}-${safeSlug(message.to)}-${id}.eml`);
       fs.writeFileSync(file, info.message);
       record.filePath = file;
+    } else if (info.rejected?.length) {
+      // Сервер принял соединение, но отказался от получателя — это не успех.
+      record.error = `получатель отклонен: ${info.rejected.join(', ')} (${info.response ?? 'без ответа'})`;
+      console.error(`[mail] ${record.error}`);
+    } else {
+      console.info(`[mail] ${message.to} ← «${message.subject}» · ответ сервера: ${info.response ?? 'ok'}`);
     }
   } catch (error) {
     record.error = error?.message ?? String(error);

@@ -14,7 +14,7 @@ import { resolveActor } from './identity.js';
 import { sseHandler } from './events.js';
 import { HttpError, sendJson, sendText, serveStatic } from './http.js';
 import { startEscalationWorker } from './domain/escalation.js';
-import { deliveryMode } from './mail/transport.js';
+import { deliveryMode, verifyTransport } from './mail/transport.js';
 
 import * as api from './routes/api.js';
 import * as files from './routes/files.js';
@@ -32,25 +32,24 @@ const routes = [
 
   ['POST', '/api/signals', api.createSignal],
   ['GET', '/api/signals/:id', api.getSignal],
+  ['PUT', '/api/signals/:id', api.updateSignal],
   ['POST', '/api/signals/:id/status', api.changeSignalStatus],
+  ['POST', '/api/signals/:id/assign', api.assignSignal],
   ['POST', '/api/signals/:id/age', api.ageSignal],
-
-  ['POST', '/api/tasks', api.createTask],
-  ['GET', '/api/tasks/:id', api.getTask],
-  ['POST', '/api/tasks/:id/status', api.changeTaskStatus],
+  ['POST', '/api/signals/:id/category', api.distributeSignal],
 
   ['POST', '/api/auth/login', api.login],
   ['POST', '/api/auth/logout', api.logout],
+  ['POST', '/api/auth/register', api.register],
 
   ['POST', '/api/admins', api.createAdmin],
+  ['PUT', '/api/users/:id/categories', api.updateUserCategories],
   ['POST', '/api/verification/resend', api.resendVerification],
-  ['PUT', '/api/settings', api.updateSettings],
 
   ['POST', '/api/files', files.uploadFiles],
   ['GET', '/files/:id', files.downloadFile],
 
   ['GET', '/api/export/signals', exportRoutes.exportSignals],
-  ['GET', '/api/export/tasks', exportRoutes.exportTasks],
 
   ['GET', '/verify', verifyEmail],
   ['GET', '/dev/mailbox', mailboxIndex],
@@ -87,8 +86,8 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURIComponent(url.pathname);
 
   try {
-    // Идентичность определяется до маршрутизации: она нужна и API, и статике
-    // (кука устройства должна выдаваться уже при первом открытии страницы).
+    // Идентичность определяется до маршрутизации: сессия нужна и API, и странице
+    // подтверждения почты, и статике.
     const actor = resolveActor(req, res);
     const route = matchRoute(req.method, pathname);
 
@@ -146,5 +145,6 @@ server.listen(PORT, () => {
   if (seeded) {
     console.log(`  Создан администратор по умолчанию: ${DEFAULT_ADMIN.login} / ${DEFAULT_ADMIN.password}`);
   }
-  console.log('');
+  // Проверка SMTP идет после старта: сервер поднимается независимо от почты.
+  verifyTransport().finally(() => console.log(''));
 });

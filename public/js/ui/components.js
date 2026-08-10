@@ -4,11 +4,14 @@ import { html, escapeHtml, formatDateTime, formatDuration, truncate } from '../c
 import {
   STATUS_META,
   STATUS_ORDER,
-  TASK_STATUS_META,
+  HISTORY_KIND,
+  HISTORY_KIND_LABEL,
+  ROLE_LABEL,
   ROLE,
-  lineLabel,
+  categoryShort,
   iconForFile,
   formatBytes,
+  formatShortName,
 } from '/shared/constants.js';
 import { escalationDueAt, isActive } from '/shared/state-machine.js';
 import { validateFiles, acceptAttribute, limitsHint } from '../domain/files.js';
@@ -18,14 +21,6 @@ export function statusBadge(status, { withHint = false } = {}) {
   if (!meta) return '';
   const titleAttr = withHint ? `title="${escapeHtml(meta.hint)}"` : '';
   return html`<span class="badge badge--${status}" ${[titleAttr]}>
-    <span class="badge__dot"></span>${meta.label}
-  </span>`;
-}
-
-export function taskBadge(status) {
-  const meta = TASK_STATUS_META[status];
-  if (!meta) return '';
-  return html`<span class="badge badge--task-${status}" title="${meta.hint}">
     <span class="badge__dot"></span>${meta.label}
   </span>`;
 }
@@ -40,15 +35,14 @@ export function statusLegend() {
   return html`<ul class="legend">${items}</ul>`;
 }
 
-export function lineTag(line) {
-  const cls = line ? `tag--${line}` : 'tag--none';
-  return html`<span class="tag ${cls}">${lineLabel(line)}</span>`;
+export function categoryTag(category) {
+  const cls = category ? `tag--${category}` : 'tag--none';
+  return html`<span class="tag ${cls}">${categoryShort(category)}</span>`;
 }
 
 function actorLabel(entry) {
   if (entry.byRole === ROLE.SYSTEM) return 'Система';
-  if (entry.byRole === ROLE.ADMIN) return `${entry.byName} · администратор`;
-  return `${entry.byName} · подрядчик`;
+  return `${entry.byName} · ${(ROLE_LABEL[entry.byRole] ?? 'участник').toLowerCase()}`;
 }
 
 /** Таймер до автоэскалации либо отметка о её просрочке. */
@@ -187,49 +181,127 @@ export function bindFileField(root) {
 export function signalCard(signal, { href, now = Date.now() } = {}) {
   return html`<a class="card card--${signal.status}" href="${href}">
     <div class="card__head">
-      ${[statusBadge(signal.status)]} ${[lineTag(signal.line)]} ${[attachmentsBadge(signal.attachments)]}
+      ${[statusBadge(signal.status)]} ${[categoryTag(signal.category)]} ${[attachmentsBadge(signal.attachments)]}
     </div>
     <h3 class="card__title">${signal.contractorName}</h3>
     <p class="card__sector">Сектор: ${signal.sector}</p>
     <p class="card__desc">${truncate(signal.description, 120)}</p>
     <div class="card__foot">
+      ${[assigneeChip(signal)]}
       <span>Создан ${formatDateTime(signal.createdAt)}</span>
       ${[escalationHint(signal, now)]}
     </div>
   </a>`;
 }
 
-export function taskCard(task, { href } = {}) {
-  return html`<a class="card card--task-${task.status}" href="${href}">
-    <div class="card__head">${[taskBadge(task.status)]} ${[attachmentsBadge(task.attachments)]}</div>
-    <h3 class="card__title">${task.title}</h3>
-    <p class="card__desc">${truncate(task.description, 140)}</p>
-    <div class="card__foot">
-      <span>Автор: ${task.authorName}</span>
-      <span>Создана ${formatDateTime(task.createdAt)}</span>
-    </div>
-  </a>`;
+/** Подпись значения поля в ленте правок — длинные описания режем. */
+function diffValue(value) {
+  const text = String(value ?? '').trim();
+  return text ? truncate(text, 90) : '— пусто —';
 }
 
-export function historyList(signal) {
-  const items = [...signal.history]
+function editDiff(entry) {
+  const changes = entry.details?.changes;
+  if (!changes?.length) return '';
+
+  const rows = changes.map(
+    (change) => html`<li class="diff__row">
+      <span class="diff__field">${change.label}</span>
+      <span class="diff__from">${diffValue(change.from)}</span>
+      <span class="diff__arrow">→</span>
+      <span class="diff__to">${diffValue(change.to)}</span>
+    </li>`,
+  );
+  return html`<ul class="diff">${rows}</ul>`;
+}
+
+/**
+ * Лента истории: создание, смены статуса, правки и принятие в работу.
+ * Одна и та же для сигналов и задач — отличаются только подписи статусов.
+ */
+export function historyList(history, { badgeFor = statusBadge, statusMeta = STATUS_META } = {}) {
+  const shortName = (status) => statusMeta[status]?.short ?? statusMeta[status]?.label ?? status;
+
+  const items = [...(history ?? [])]
     .sort((a, b) => a.at - b.at)
-    .map(
-      (entry) => html`<li class="history__item history__item--${entry.to}">
+    .map((entry) => {
+      const isStatusEvent = entry.kind === HISTORY_KIND.STATUS || entry.kind === HISTORY_KIND.CREATE;
+      const marker = isStatusEvent && entry.to ? entry.to : entry.kind;
+
+      const head =
+        isStatusEvent && entry.to
+          ? badgeFor(entry.to)
+          : html`<span class="history__kind history__kind--${entry.kind}">
+              ${HISTORY_KIND_LABEL[entry.kind] ?? entry.kind}
+            </span>`;
+
+      const transition =
+        entry.kind === HISTORY_KIND.STATUS && entry.from ? `${shortName(entry.from)} → ${shortName(entry.to)} · ` : '';
+
+      return html`<li class="history__item history__item--${marker}">
         <div class="history__marker"></div>
         <div class="history__body">
           <div class="history__row">
-            ${[statusBadge(entry.to)]}
+            ${[head]}
             <span class="history__time">${formatDateTime(entry.at)}</span>
           </div>
-          <div class="history__meta">
-            ${entry.from ? `${STATUS_META[entry.from].short} → ${STATUS_META[entry.to].short} · ` : ''}${actorLabel(entry)}
-          </div>
+          <div class="history__meta">${transition}${actorLabel(entry)}</div>
           ${[entry.note ? html`<div class="history__note">${entry.note}</div>` : '']}
+          ${[editDiff(entry)]}
         </div>
-      </li>`,
-    );
+      </li>`;
+    });
+
+  if (!items.length) return html`<p class="column__empty">История пуста.</p>`;
   return html`<ol class="history">${items}</ol>`;
+}
+
+/* -------------------------------- исполнитель -------------------------------- */
+
+/**
+ * Кто принял в работу. Исполнителей может быть несколько: в компактных местах
+ * показываем фамилии с инициалами и сворачиваем хвост в «+N», полные имена
+ * остаются в подсказке и в карточке.
+ */
+export function assigneeChip(entity, { compact = true, freeLabel = 'Не принят', limit = 2 } = {}) {
+  const people = entity?.assignees ?? [];
+  if (!people.length) return html`<span class="assignee assignee--free">${freeLabel}</span>`;
+
+  const fullList = people.map((person) => person.name).join(', ');
+  const shown = compact ? people.slice(0, limit) : people;
+  const hidden = people.length - shown.length;
+
+  const chips = shown.map(
+    (person) => html`<span class="assignee" title="В работе у: ${fullList}">
+      <span class="assignee__icon">◗</span>${compact ? formatShortName(person.name) : person.name}
+    </span>`,
+  );
+
+  if (hidden > 0) chips.push(html`<span class="assignee assignee--more" title="${fullList}">+${hidden}</span>`);
+
+  return html`<span class="assignees">${chips}</span>`;
+}
+
+/** Список исполнителей в карточке — с кнопкой снять для администратора. */
+export function assigneeRoster(entity, { removable = false, freeLabel = 'Никто не принял в работу' } = {}) {
+  const people = entity?.assignees ?? [];
+  if (!people.length) return html`<p class="roster__empty">${freeLabel}</p>`;
+
+  const items = people.map(
+    (person) => html`<li class="roster__item">
+      <span class="assignee"><span class="assignee__icon">◗</span>${person.name}</span>
+      <span class="roster__time">с ${formatDateTime(person.at)}</span>
+      ${[
+        removable
+          ? html`<button class="roster__remove" type="button" data-release="${person.id}" title="Снять исполнителя">
+              ×
+            </button>`
+          : '',
+      ]}
+    </li>`,
+  );
+
+  return html`<ul class="roster">${items}</ul>`;
 }
 
 export function emptyState(title, text, actionHtml = '') {

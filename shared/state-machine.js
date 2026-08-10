@@ -4,9 +4,9 @@
  *            (создание)
  *                │
  *                ▼
- *            ┌────────┐   +48ч, только СИСТЕМА    ┌────────┐
+ *            ┌────────┐  +48ч СИСТЕМА или админ   ┌────────┐
  *            │ ЖЕЛТЫЙ │ ────────────────────────► │КРАСНЫЙ │
- *            └────────┘                           └────────┘
+ *            └────────┘        вручную            └────────┘
  *              │    │                                │   │
  *   автор/админ│    │только админ         автор/админ│   │только админ
  *              ▼    ▼                                ▼   ▼
@@ -15,20 +15,21 @@
  *         └────────┘ └────────┘               └────────┘ └────────┘
  *          терминальный статус                 терминальный статус
  *
- * Желтый и Красный НИКОГДА не выставляются вручную:
- *   Желтый  — только автоматически при создании сигнала;
- *   Красный — только автоматически фоновым воркером по достижении порога 48 часов.
+ * Желтый не выставляется вручную никогда — только автоматически при создании.
+ * Красный ставит фоновый процесс по достижении порога 48 часов, а с версии
+ * с ручной эскалацией — еще и администратор, не дожидаясь порога. В истории
+ * эти два случая различимы: у автоматического автор события — Система.
  */
 
-import { STATUS, STATUS_META, ROLE, ESCALATION_MS, NOTIFICATION_EVENT } from './constants.js';
+import { STATUS, STATUS_META, ROLE, ESCALATION_MS, NOTIFICATION_EVENT, isAdminRole } from './constants.js';
 
 /** Декларативное описание разрешенных переходов. */
 export const TRANSITIONS = [
   {
     to: STATUS.RED,
     from: [STATUS.YELLOW],
-    actor: 'system',
-    description: 'Автоматическая эскалация системой через 48 часов',
+    actor: 'system-or-admin',
+    description: 'Автоэскалация через 48 часов или ручной перевод администратором',
   },
   {
     to: STATUS.GREEN,
@@ -101,14 +102,14 @@ export function canTransition(signal, to, actor) {
   }
 
   const isSystem = actor?.role === ROLE.SYSTEM;
-  const isAdminActor = actor?.role === ROLE.ADMIN;
+  const isAdminActor = isAdminRole(actor?.role);
   const isAuthor = actor?.id === signal.authorId;
 
   switch (rule.actor) {
-    case 'system':
-      return isSystem
+    case 'system-or-admin':
+      return isSystem || isAdminActor
         ? { allowed: true }
-        : { allowed: false, reason: 'Красный статус выставляется только системой автоматически' };
+        : { allowed: false, reason: 'Перевести сигнал в Красный может система или администратор' };
     case 'admin':
       return isAdminActor
         ? { allowed: true }
@@ -124,7 +125,51 @@ export function canTransition(signal, to, actor) {
 
 /** Статусы, которые актор может выставить вручную прямо сейчас. */
 export function availableManualTransitions(signal, actor) {
-  return [STATUS.GREEN, STATUS.GRAY].filter((to) => canTransition(signal, to, actor).allowed);
+  return [STATUS.RED, STATUS.GREEN, STATUS.GRAY].filter((to) => canTransition(signal, to, actor).allowed);
+}
+
+/**
+ * Право редактировать карточку.
+ * Администратор правит любую; автор — только свою и пока она не закрыта:
+ * после терминального статуса запись становится историческим документом.
+ */
+export function canEdit(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (isAdminRole(actor?.role)) return { allowed: true };
+  if (actor?.id !== signal.authorId) return { allowed: false, reason: 'Редактировать может автор или администратор' };
+  if (isTerminal(signal.status)) {
+    return { allowed: false, reason: 'Сигнал закрыт — редактирование недоступно' };
+  }
+  return { allowed: true };
+}
+
+export function assignees(entity) {
+  return entity?.assignees ?? [];
+}
+
+export function isAssignedTo(entity, userId) {
+  return assignees(entity).some((person) => person.id === userId);
+}
+
+/**
+ * Принять в работу может любой администратор, пока сигнал активен.
+ * Исполнителей несколько, поэтому занятость другим человеком уже не мешает —
+ * не пускаем только повторное принятие тем же самым.
+ */
+export function canAssign(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (!isAdminRole(actor?.role)) return { allowed: false, reason: 'Принимать в работу может только администратор' };
+  if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт' };
+  if (isAssignedTo(signal, actor.id)) return { allowed: false, reason: 'Вы уже в работе по этому сигналу' };
+  return { allowed: true };
+}
+
+/** Снять исполнителя — себя или коллегу — может любой администратор. */
+export function canRelease(signal, actor, userId = actor?.id) {
+  if (!assignees(signal).length) return { allowed: false, reason: 'Сигнал никем не принят' };
+  if (!isAdminRole(actor?.role)) return { allowed: false, reason: 'Доступно только администратору' };
+  if (!isAssignedTo(signal, userId)) return { allowed: false, reason: 'Этот исполнитель не в работе по сигналу' };
+  return { allowed: true };
 }
 
 /**
@@ -141,4 +186,14 @@ export function notificationEventFor(from, to) {
   if (to === STATUS.RED) return NOTIFICATION_EVENT.RED;
   if (to === STATUS.GREEN || to === STATUS.GRAY) return NOTIFICATION_EVENT.RESOLVE;
   return null;
+}
+
+/** Распределять сигналы по категориям может только главный администратор. */
+export function canDistribute(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (actor?.role !== ROLE.SUPERADMIN) {
+    return { allowed: false, reason: 'Распределять сигналы может только главный администратор' };
+  }
+  if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт' };
+  return { allowed: true };
 }

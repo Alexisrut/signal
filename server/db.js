@@ -3,15 +3,14 @@
  *
  * Драйвер — node-sqlite3-wasm: настоящий SQLite, скомпилированный в WebAssembly,
  * без нативной сборки. Весь код работает через адаптер `sql` с позиционными
- * параметрами `?`, поэтому замена драйвера (better-sqlite3, node:sqlite) —
- * это правка одного этого файла.
+ * параметрами `?`, поэтому замена драйвера — правка одного этого файла.
  */
 
 import fs from 'node:fs';
 import sqlite from 'node-sqlite3-wasm';
 
 import { DATA_DIR, UPLOADS_DIR, MAILBOX_DIR, DB_PATH } from './config.js';
-import { DEFAULT_ADMIN, DEFAULT_ADMIN_SETTINGS, ROLE } from '../shared/constants.js';
+import { DEFAULT_ADMIN, ROLE } from '../shared/constants.js';
 import { hashPassword, randomSalt, uid } from './crypto.js';
 
 const { Database } = sqlite;
@@ -53,10 +52,12 @@ sql.exec(`
     display_name      TEXT NOT NULL,
     login             TEXT UNIQUE,
     email             TEXT UNIQUE,
+    company_name      TEXT,
+    full_name         TEXT,
     password_salt     TEXT,
     password_hash     TEXT,
     is_email_verified INTEGER NOT NULL DEFAULT 0,
-    settings          TEXT,
+    categories        TEXT,
     created_at        INTEGER NOT NULL,
     created_by        TEXT
   );
@@ -65,44 +66,35 @@ sql.exec(`
     id              TEXT PRIMARY KEY,
     author_id       TEXT NOT NULL,
     author_role     TEXT NOT NULL,
-    line            TEXT,
+    category        TEXT,
     contractor_name TEXT NOT NULL,
     sector          TEXT NOT NULL,
     description     TEXT NOT NULL,
     status          TEXT NOT NULL,
+    distributed_at  INTEGER,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_signals_author  ON signals(author_id);
-  CREATE INDEX IF NOT EXISTS idx_signals_status  ON signals(status);
-  CREATE INDEX IF NOT EXISTS idx_signals_created ON signals(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_signals_author   ON signals(author_id);
+  CREATE INDEX IF NOT EXISTS idx_signals_status   ON signals(status);
+  CREATE INDEX IF NOT EXISTS idx_signals_created  ON signals(created_at DESC);
 
   CREATE TABLE IF NOT EXISTS signal_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     signal_id   TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
     at          INTEGER NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'status',
     status_from TEXT,
     status_to   TEXT NOT NULL,
     by_id       TEXT NOT NULL,
     by_name     TEXT NOT NULL,
     by_role     TEXT NOT NULL,
-    note        TEXT
+    note        TEXT,
+    details     TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_history_signal ON signal_history(signal_id, at);
-
-  CREATE TABLE IF NOT EXISTS tasks (
-    id          TEXT PRIMARY KEY,
-    author_id   TEXT NOT NULL,
-    title       TEXT NOT NULL,
-    description TEXT NOT NULL,
-    status      TEXT NOT NULL,
-    created_at  INTEGER NOT NULL,
-    updated_at  INTEGER NOT NULL
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 
   CREATE TABLE IF NOT EXISTS files (
     id           TEXT PRIMARY KEY,
@@ -124,6 +116,17 @@ sql.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id);
+
+  CREATE TABLE IF NOT EXISTS assignments (
+    entity_type TEXT NOT NULL,
+    entity_id   TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    user_name   TEXT NOT NULL,
+    assigned_at INTEGER NOT NULL,
+    PRIMARY KEY (entity_type, entity_id, user_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_assignments_entity ON assignments(entity_type, entity_id, assigned_at);
 
   CREATE TABLE IF NOT EXISTS email_tokens (
     token      TEXT PRIMARY KEY,
@@ -157,38 +160,94 @@ sql.exec(`
   CREATE INDEX IF NOT EXISTS idx_mail_created ON mail_log(created_at DESC);
 `);
 
-/** Первичный посев: администратор по умолчанию, если в системе нет ни одного. */
+/* --------------------------------- миграции ---------------------------------- */
+
+function hasColumn(table, column) {
+  return sql.all(`PRAGMA table_info(${table})`).some((row) => row.name === column);
+}
+
+function addColumn(table, column, definition) {
+  if (hasColumn(table, column)) return false;
+  sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.info(`[db] миграция: ${table}.${column}`);
+  return true;
+}
+
+/**
+ * Догоняющие миграции для баз, созданных прошлыми версиями. На чистой базе
+ * все проверки просто ничего не делают.
+ */
+function migrate() {
+  for (const [column, definition] of [
+    ['company_name', 'TEXT'],
+    ['full_name', 'TEXT'],
+    ['categories', 'TEXT'],
+  ]) {
+    addColumn('users', column, definition);
+  }
+
+  addColumn('signals', 'distributed_at', 'INTEGER');
+  addColumn('signals', 'category', 'TEXT');
+
+  // Линии превратились в категории: старые значения переносим по смыслу,
+  // а сигналы без линии остаются нераспределенными.
+  if (hasColumn('signals', 'line')) {
+    sql.run(`UPDATE signals SET category = 'supply' WHERE category IS NULL AND line = 'supply'`);
+    sql.run(`UPDATE signals SET category = 'design' WHERE category IS NULL AND line = 'design'`);
+    sql.run(`UPDATE signals SET category = 'admin_finance' WHERE category IS NULL AND line = 'legal'`);
+    sql.run(`UPDATE signals SET distributed_at = updated_at WHERE category IS NOT NULL AND distributed_at IS NULL`);
+
+    try {
+      sql.exec(`ALTER TABLE signals DROP COLUMN line`);
+    } catch (error) {
+      console.warn(`[db] не удалось убрать signals.line: ${error.message}`);
+    }
+    console.info('[db] миграция: линии сигналов переведены в категории');
+  }
+
+  // Роль главного администратора: первым его получает стартовая учетная запись.
+  const hasSuper = sql.get(`SELECT id FROM users WHERE role = ?`, [ROLE.SUPERADMIN]);
+  if (!hasSuper) {
+    const promoted = sql.get(`SELECT id, login FROM users WHERE role = ? ORDER BY created_at LIMIT 1`, [ROLE.ADMIN]);
+    if (promoted) {
+      sql.run(`UPDATE users SET role = ? WHERE id = ?`, [ROLE.SUPERADMIN, promoted.id]);
+      console.info(`[db] миграция: «${promoted.login}» стал главным администратором`);
+    }
+  }
+}
+
+migrate();
+
+// Индекс создается после миграций: на старой базе колонки category еще нет.
+sql.exec(`CREATE INDEX IF NOT EXISTS idx_signals_category ON signals(category)`);
+
+/** Первичный посев: главный администратор, если в системе нет ни одного. */
 export function seedDefaultAdmin() {
-  const { n } = sql.get(`SELECT COUNT(*) AS n FROM users WHERE role = ?`, [ROLE.ADMIN]);
+  const { n } = sql.get(`SELECT COUNT(*) AS n FROM users WHERE role IN (?, ?)`, [ROLE.ADMIN, ROLE.SUPERADMIN]);
   if (n > 0) return null;
 
   const salt = randomSalt();
   const admin = {
     id: uid('adm'),
     login: DEFAULT_ADMIN.login,
-    email: DEFAULT_ADMIN.email,
+    email: process.env.DEFAULT_ADMIN_EMAIL || DEFAULT_ADMIN.email,
     displayName: DEFAULT_ADMIN.displayName,
   };
 
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, password_salt, password_hash,
-                        is_email_verified, settings, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        is_email_verified, categories, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'system')`,
     [
       admin.id,
-      ROLE.ADMIN,
+      ROLE.SUPERADMIN,
       admin.displayName,
       admin.login,
       admin.email,
       salt,
       hashPassword(DEFAULT_ADMIN.password, salt),
-      // Стартовая учетная запись помечена подтвержденной: иначе демо-стенд нельзя
-      // открыть без настроенного SMTP. Все создаваемые далее администраторы
-      // проходят обычную процедуру верификации по ссылке из письма.
-      1,
-      JSON.stringify(DEFAULT_ADMIN_SETTINGS),
+      JSON.stringify([]),
       Date.now(),
-      'system',
     ],
   );
 

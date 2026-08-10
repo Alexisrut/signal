@@ -2,8 +2,10 @@
  * Подсистема уведомлений.
  *
  * Точка входа одна — `notifySignalEvent`, и вызывается она только из сервиса
- * сигналов сразу после успешного перехода конечного автомата. Сам список
- * получателей формируется фильтрацией администраторов по четырем условиям ТЗ.
+ * сигналов сразу после успешного перехода конечного автомата.
+ *
+ * Фильтрация получателей убрана: письмо получают все администраторы
+ * с подтвержденной почтой, настроек рассылки больше нет.
  */
 
 import { sql } from '../db.js';
@@ -12,12 +14,7 @@ import { toUser } from '../identity.js';
 import { sendMail, deliveryMode } from './transport.js';
 import { verificationEmail, signalNotificationEmail } from './templates.js';
 
-import {
-  ROLE,
-  EMAIL_TOKEN_TTL_MS,
-  NOTIFICATION_TRIGGERS,
-  watchesLine,
-} from '../../shared/constants.js';
+import { ROLE, EMAIL_TOKEN_TTL_MS } from '../../shared/constants.js';
 
 export function signalUrl(signalId) {
   return `${APP_URL}/#/admin/signal/${signalId}`;
@@ -38,15 +35,12 @@ export async function sendVerificationEmail(user, token) {
   return { mode: deliveryMode, ...result };
 }
 
-/**
- * Получатели: подтвержденная почта + включенная рассылка.
- * Остальные два условия (линия и конкретный триггер) проверяются ниже.
- */
-function candidates() {
+/** Получатели: все администраторы с подтвержденной почтой. */
+function recipients() {
   return sql
-    .all(`SELECT * FROM users WHERE role = ? AND is_email_verified = 1`, [ROLE.ADMIN])
+    .all(`SELECT * FROM users WHERE role IN (?, ?) AND is_email_verified = 1`, [ROLE.ADMIN, ROLE.SUPERADMIN])
     .map(toUser)
-    .filter((admin) => admin.settings.notificationsEnabled);
+    .filter((user) => Boolean(user.email));
 }
 
 /**
@@ -57,25 +51,19 @@ function candidates() {
 export function notifySignalEvent(event, signal, actor) {
   if (!event) return { sent: 0, recipients: [] };
 
-  const trigger = NOTIFICATION_TRIGGERS[event];
-  if (!trigger) return { sent: 0, recipients: [] };
-
-  const recipients = candidates().filter(
-    (admin) => watchesLine(admin.settings, signal.line) && admin.settings[trigger.setting] === true,
-  );
-
-  if (!recipients.length) return { sent: 0, recipients: [] };
+  const people = recipients();
+  if (!people.length) return { sent: 0, recipients: [] };
 
   const message = signalNotificationEmail({ event, signal, actor, url: signalUrl(signal.id) });
 
   // Рассылка не должна задерживать HTTP-ответ: отправляем в фоне,
   // ошибки доставки фиксируются в mail_log, а не роняют операцию.
-  for (const admin of recipients) {
-    sendMail({ ...message, to: admin.email, kind: `signal:${event}`, entityId: signal.id }).catch((error) =>
+  for (const person of people) {
+    sendMail({ ...message, to: person.email, kind: `signal:${event}`, entityId: signal.id }).catch((error) =>
       console.error('[notifier] сбой отправки', error),
     );
   }
 
-  console.info(`[notifier] событие ${event} по сигналу ${signal.id} → ${recipients.length} получателей`);
-  return { sent: recipients.length, recipients: recipients.map((admin) => admin.email) };
+  console.info(`[notifier] событие ${event} по сигналу ${signal.id} → ${people.length} получателей`);
+  return { sent: people.length, recipients: people.map((person) => person.email) };
 }

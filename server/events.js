@@ -44,7 +44,7 @@ export function sseHandler(req, res) {
 
 /**
  * Опубликовать изменение.
- * @param {string} type тип изменения (`signal`, `task`, `admin`, `settings`)
+ * @param {string} type тип изменения (`signal`, `user`)
  * @param {object} payload полезная нагрузка для отладки и точечных обновлений
  */
 export function publish(type, payload = {}) {

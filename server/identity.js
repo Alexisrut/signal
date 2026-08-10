@@ -1,67 +1,65 @@
 /**
  * Идентичность запроса.
  *
- * Подрядчик — анонимный пользователь, привязанный к устройству: идентификатор живет
- * в куке `sms_device` и создается сервером при первом обращении. Запись в таблице
- * users появляется лениво, при первом реальном действии (создании сигнала).
- *
- * Администратор — сессия в куке `sms_session`, токен хранится в таблице sessions.
+ * Анонимных пользователей больше нет: и подрядчик, и администратор входят
+ * по логину и паролю. Логин подрядчика — название его компании.
  */
 
 import { sql } from './db.js';
-import { uid, randomToken } from './crypto.js';
+import { randomToken } from './crypto.js';
 import { parseCookies, appendCookie, clearCookie } from './http.js';
 import { SESSION_TTL_MS } from './config.js';
-import { ROLE, normalizeSettings } from '../shared/constants.js';
+import { ROLE, isAdminRole, CATEGORY_IDS } from '../shared/constants.js';
 
-const DEVICE_COOKIE = 'sms_device';
 const SESSION_COOKIE = 'sms_session';
-const DEVICE_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
-export function contractorDisplayName(deviceId) {
-  return `Подрядчик ${deviceId.slice(-4).toUpperCase()}`;
+function safeParse(json, fallback) {
+  try {
+    const value = JSON.parse(json ?? 'null');
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /** Строка таблицы users → объект предметной области. */
 export function toUser(row) {
   if (!row) return null;
+
   const user = {
     id: row.id,
     role: row.role,
     displayName: row.display_name,
+    login: row.login,
+    email: row.email,
     createdAt: row.created_at,
   };
-  if (row.role === ROLE.ADMIN) {
-    user.login = row.login;
-    user.email = row.email;
-    user.isEmailVerified = Boolean(row.is_email_verified);
-    user.settings = normalizeSettings(safeParse(row.settings));
-  }
-  return user;
-}
 
-function safeParse(json) {
-  try {
-    return JSON.parse(json ?? '{}');
-  } catch {
-    return {};
+  if (row.role === ROLE.CONTRACTOR) {
+    user.companyName = row.company_name;
+    user.fullName = row.full_name;
   }
+
+  if (isAdminRole(row.role)) {
+    user.isEmailVerified = Boolean(row.is_email_verified);
+    // Главный администратор видит все категории независимо от списка.
+    user.categories =
+      row.role === ROLE.SUPERADMIN ? [...CATEGORY_IDS] : safeParse(row.categories, []).filter((id) => CATEGORY_IDS.includes(id));
+  }
+
+  return user;
 }
 
 export function findUser(id) {
   return toUser(sql.get(`SELECT * FROM users WHERE id = ?`, [id]));
 }
 
-/** Ленивая регистрация подрядчика — вызывается при первом действии. */
-export function ensureContractorRecord(actor) {
-  const existing = sql.get(`SELECT id FROM users WHERE id = ?`, [actor.id]);
-  if (existing) return;
+export function findByLogin(login) {
+  return sql.get(`SELECT * FROM users WHERE lower(login) = lower(?)`, [String(login ?? '').trim()]);
+}
 
-  sql.run(
-    `INSERT INTO users (id, role, display_name, is_email_verified, created_at)
-     VALUES (?, ?, ?, 0, ?)`,
-    [actor.id, ROLE.CONTRACTOR, actor.displayName, Date.now()],
-  );
+export function findByEmail(email) {
+  return sql.get(`SELECT * FROM users WHERE lower(email) = lower(?)`, [String(email ?? '').trim()]);
 }
 
 /* ---------------------------------- сессии ----------------------------------- */
@@ -85,46 +83,26 @@ export function destroySession(req, res) {
   clearCookie(res, SESSION_COOKIE);
 }
 
-/**
- * Определяет действующего пользователя запроса и, при необходимости,
- * выдает устройству идентификатор подрядчика.
- */
+/** @returns {object|null} вошедший пользователь либо null для гостя */
 export function resolveActor(req, res) {
-  const cookies = parseCookies(req);
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
 
-  let deviceId = cookies[DEVICE_COOKIE];
-  if (!deviceId || !/^ctr_[a-z0-9_]+$/i.test(deviceId)) {
-    deviceId = uid('ctr');
-    appendCookie(res, DEVICE_COOKIE, deviceId, { maxAge: DEVICE_TTL_MS, httpOnly: false });
+  const session = sql.get(`SELECT * FROM sessions WHERE token = ?`, [token]);
+  if (session && session.expires_at > Date.now()) {
+    const user = findUser(session.user_id);
+    if (user) return user;
   }
 
-  const sessionToken = cookies[SESSION_COOKIE];
-  if (sessionToken) {
-    const session = sql.get(`SELECT * FROM sessions WHERE token = ?`, [sessionToken]);
-    if (session && session.expires_at > Date.now()) {
-      const admin = findUser(session.user_id);
-      if (admin && admin.role === ROLE.ADMIN) return { ...admin, deviceId };
-    }
-    // Сессия протухла или учетная запись удалена.
-    sql.run(`DELETE FROM sessions WHERE token = ?`, [sessionToken]);
-    clearCookie(res, SESSION_COOKIE);
-  }
-
-  const known = findUser(deviceId);
-  return {
-    id: deviceId,
-    deviceId,
-    role: ROLE.CONTRACTOR,
-    displayName: known?.displayName ?? contractorDisplayName(deviceId),
-    anonymous: !known,
-  };
+  // Сессия протухла или учетная запись удалена.
+  sql.run(`DELETE FROM sessions WHERE token = ?`, [token]);
+  clearCookie(res, SESSION_COOKIE);
+  return null;
 }
 
-export function isAdmin(actor) {
-  return actor?.role === ROLE.ADMIN;
-}
+export const isAdmin = (actor) => isAdminRole(actor?.role);
+export const isSuperadmin = (actor) => actor?.role === ROLE.SUPERADMIN;
+export const isContractor = (actor) => actor?.role === ROLE.CONTRACTOR;
 
 /** Полноправный администратор — вошедший И подтвердивший почту. */
-export function isVerifiedAdmin(actor) {
-  return isAdmin(actor) && actor.isEmailVerified === true;
-}
+export const isVerifiedAdmin = (actor) => isAdmin(actor) && actor.isEmailVerified === true;

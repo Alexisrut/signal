@@ -7,8 +7,19 @@
 export const ROLE = {
   CONTRACTOR: 'contractor',
   ADMIN: 'admin',
+  SUPERADMIN: 'superadmin',
   SYSTEM: 'system',
 };
+
+export const ROLE_LABEL = {
+  [ROLE.CONTRACTOR]: 'Подрядчик',
+  [ROLE.ADMIN]: 'Администратор',
+  [ROLE.SUPERADMIN]: 'Главный администратор',
+  [ROLE.SYSTEM]: 'Система',
+};
+
+/** Администраторы обеих разновидностей. */
+export const isAdminRole = (role) => role === ROLE.ADMIN || role === ROLE.SUPERADMIN;
 
 /* --------------------------------- Сигналы ---------------------------------- */
 
@@ -52,42 +63,50 @@ export const STATUS_META = {
   },
 };
 
-/** `null` — линия пропущена при создании сигнала. */
-export const LINE = {
-  LEGAL: 'legal',
-  SUPPLY: 'supply',
+/* -------------------------------- Категории ---------------------------------- */
+
+/**
+ * Категорию подрядчик не выбирает: сигнал приходит без нее и попадает
+ * в раздел «Распределение», где главный администратор назначает категорию.
+ * `null` — сигнал еще не распределен.
+ */
+export const CATEGORY = {
+  ADMIN_FINANCE: 'admin_finance',
   DESIGN: 'design',
+  SUPPLY: 'supply',
+  OTHER: 'other',
   NONE: null,
 };
 
-export const LINES = [
-  { id: LINE.LEGAL, label: 'Юридическая', hint: 'Договоры, претензии, согласования' },
-  { id: LINE.SUPPLY, label: 'Поставка', hint: 'Материалы, сроки, логистика' },
-  { id: LINE.DESIGN, label: 'Проектирование', hint: 'Чертежи, РД, изменения проекта' },
+export const CATEGORIES = [
+  { id: CATEGORY.ADMIN_FINANCE, label: 'Административный/финансовый', short: 'Админ./финансы' },
+  { id: CATEGORY.DESIGN, label: 'Проектирование', short: 'Проектирование' },
+  { id: CATEGORY.SUPPLY, label: 'Поставка', short: 'Поставка' },
+  { id: CATEGORY.OTHER, label: 'Разное', short: 'Разное' },
 ];
 
-export const NO_LINE_LABEL = 'Без линии';
+export const CATEGORY_IDS = CATEGORIES.map((category) => category.id);
 
-/** Ключ, которым «отсутствие линии» кодируется в URL, настройках и фильтрах. */
-export const NO_LINE_KEY = 'none';
+export const UNDISTRIBUTED_LABEL = 'Не распределен';
 
-export function lineLabel(lineId) {
-  if (lineId === LINE.NONE || lineId === undefined) return NO_LINE_LABEL;
-  return LINES.find((l) => l.id === lineId)?.label ?? NO_LINE_LABEL;
+export function categoryLabel(id) {
+  if (!id) return UNDISTRIBUTED_LABEL;
+  return CATEGORIES.find((category) => category.id === id)?.label ?? UNDISTRIBUTED_LABEL;
 }
 
-/** Все колонки «карты сигналов»: три линии + корзина «Без линии». */
-export const LINE_COLUMNS = [...LINES, { id: LINE.NONE, label: NO_LINE_LABEL, hint: 'Линия пропущена автором' }];
-
-/** Значения, допустимые в настройке `notifyLines`. */
-export const NOTIFY_LINE_KEYS = [...LINES.map((l) => l.id), NO_LINE_KEY];
-
-export function lineToKey(line) {
-  return line === LINE.NONE ? NO_LINE_KEY : line;
+export function categoryShort(id) {
+  if (!id) return UNDISTRIBUTED_LABEL;
+  return CATEGORIES.find((category) => category.id === id)?.short ?? UNDISTRIBUTED_LABEL;
 }
 
-export function keyToLine(key) {
-  return key === NO_LINE_KEY || key === null || key === undefined ? LINE.NONE : key;
+export const isDistributed = (signal) => Boolean(signal?.category);
+
+/** Видит ли администратор сигнал этой категории. */
+export function canSeeCategory(user, category) {
+  if (user?.role === ROLE.SUPERADMIN) return true;
+  if (user?.role !== ROLE.ADMIN) return false;
+  if (!category) return false; // нераспределенные видит только главный администратор
+  return (user.categories ?? []).includes(category);
 }
 
 /** 48 часов — порог автоматической эскалации Желтый → Красный. */
@@ -105,20 +124,63 @@ export const SYSTEM_ACTOR = Object.freeze({
   displayName: 'Система',
 });
 
-/* ---------------------------------- Задачи ----------------------------------- */
+/* --------------------------- Исполнители и история ---------------------------- */
 
-export const TASK_STATUS = {
-  OPEN: 'open',
-  IN_PROGRESS: 'in_progress',
-  DONE: 'done',
+/**
+ * «Фамилия И.О.» для компактных мест интерфейса.
+ *
+ * Инициалы собираются только когда все слова похожи на части ФИО (каждое
+ * с заглавной). «Иванов Иван Сергеевич» → «Иванов И.С.», а «Главный
+ * администратор» остается как есть — сокращать должность бессмысленно.
+ */
+export function formatShortName(displayName) {
+  const parts = String(displayName ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? '';
+
+  const looksLikeName = parts.every((part) => part[0] === part[0].toUpperCase() && /^[\p{L}]/u.test(part));
+  if (!looksLikeName) return parts.join(' ');
+
+  const initials = parts.slice(1, 3).map((part) => `${part[0].toUpperCase()}.`).join('');
+  return `${parts[0]} ${initials}`;
+}
+
+/** Виды событий в ленте истории сигнала. */
+export const HISTORY_KIND = {
+  CREATE: 'create',
+  STATUS: 'status',
+  EDIT: 'edit',
+  ASSIGN: 'assign',
+  RELEASE: 'release',
+  CATEGORY: 'category',
 };
 
-export const TASK_STATUS_ORDER = [TASK_STATUS.OPEN, TASK_STATUS.IN_PROGRESS, TASK_STATUS.DONE];
+export const HISTORY_KIND_LABEL = {
+  [HISTORY_KIND.CREATE]: 'Создано',
+  [HISTORY_KIND.STATUS]: 'Смена статуса',
+  [HISTORY_KIND.EDIT]: 'Редактирование',
+  [HISTORY_KIND.ASSIGN]: 'Принято в работу',
+  [HISTORY_KIND.RELEASE]: 'Снято с исполнителя',
+  [HISTORY_KIND.CATEGORY]: 'Распределение',
+};
 
-export const TASK_STATUS_META = {
-  [TASK_STATUS.OPEN]: { id: TASK_STATUS.OPEN, label: 'Открыта', hint: 'Задача заведена и ждет исполнителя.' },
-  [TASK_STATUS.IN_PROGRESS]: { id: TASK_STATUS.IN_PROGRESS, label: 'В работе', hint: 'Задача взята в работу.' },
-  [TASK_STATUS.DONE]: { id: TASK_STATUS.DONE, label: 'Завершена', hint: 'Задача выполнена.' },
+/** Фильтр по принятию в работу. `all` — ничего не выбрано, показываются все. */
+export const ASSIGNMENT = {
+  ALL: 'all',
+  ASSIGNED: 'assigned',
+  FREE: 'free',
+};
+
+export const ASSIGNMENT_FILTERS = [
+  { id: ASSIGNMENT.ALL, label: 'Все' },
+  { id: ASSIGNMENT.ASSIGNED, label: 'Принятые' },
+  { id: ASSIGNMENT.FREE, label: 'Непринятые' },
+];
+
+/** Поля, доступные для редактирования, — и их подписи в истории правок. */
+export const SIGNAL_FIELD_LABELS = {
+  contractorName: 'Подрядчик',
+  sector: 'Сектор работы',
+  description: 'Описание',
 };
 
 /* ------------------------------- Уведомления --------------------------------- */
@@ -128,67 +190,21 @@ export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
 /** Время жизни токена подтверждения почты. */
 export const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Селектор «все линии» в настройке notifyLines. */
-export const NOTIFY_ALL_LINES = 'all';
-
+/**
+ * События, по которым уходят письма. Фильтрация получателей убрана:
+ * письмо получает каждый администратор с подтвержденной почтой.
+ */
 export const NOTIFICATION_EVENT = {
   CREATE: 'create',
   RED: 'red',
   RESOLVE: 'resolve',
 };
 
-/** Какой флаг настроек отвечает за каждое событие конечного автомата. */
-export const NOTIFICATION_TRIGGERS = {
-  [NOTIFICATION_EVENT.CREATE]: {
-    setting: 'notifyOnCreate',
-    label: 'Уведомление при создании проблемы',
-  },
-  [NOTIFICATION_EVENT.RED]: {
-    setting: 'notifyOnRed',
-    label: 'Уведомление при попадании проблемы в красный сигнал',
-  },
-  [NOTIFICATION_EVENT.RESOLVE]: {
-    setting: 'notifyOnResolve',
-    label: 'Уведомление при решении/отклонении проблемы',
-  },
+export const NOTIFICATION_EVENT_LABEL = {
+  [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
+  [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
+  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
 };
-
-export const DEFAULT_ADMIN_SETTINGS = Object.freeze({
-  notificationsEnabled: true,
-  notifyLines: NOTIFY_ALL_LINES,
-  notifyOnCreate: true,
-  notifyOnRed: true,
-  notifyOnResolve: false,
-  tasksDashboardEnabled: true,
-});
-
-/** Приводит произвольный объект настроек к валидной форме (используется на обоих концах). */
-export function normalizeSettings(raw) {
-  const source = raw && typeof raw === 'object' ? raw : {};
-  const bool = (value, fallback) => (typeof value === 'boolean' ? value : fallback);
-
-  let notifyLines = source.notifyLines;
-  if (notifyLines !== NOTIFY_ALL_LINES) {
-    const list = Array.isArray(notifyLines) ? notifyLines.filter((key) => NOTIFY_LINE_KEYS.includes(key)) : [];
-    // Выбраны все линии до единой — сворачиваем в селектор «Все».
-    notifyLines = list.length === NOTIFY_LINE_KEYS.length ? NOTIFY_ALL_LINES : list;
-  }
-
-  return {
-    notificationsEnabled: bool(source.notificationsEnabled, DEFAULT_ADMIN_SETTINGS.notificationsEnabled),
-    notifyLines: notifyLines ?? DEFAULT_ADMIN_SETTINGS.notifyLines,
-    notifyOnCreate: bool(source.notifyOnCreate, DEFAULT_ADMIN_SETTINGS.notifyOnCreate),
-    notifyOnRed: bool(source.notifyOnRed, DEFAULT_ADMIN_SETTINGS.notifyOnRed),
-    notifyOnResolve: bool(source.notifyOnResolve, DEFAULT_ADMIN_SETTINGS.notifyOnResolve),
-    tasksDashboardEnabled: bool(source.tasksDashboardEnabled, DEFAULT_ADMIN_SETTINGS.tasksDashboardEnabled),
-  };
-}
-
-/** Подписан ли администратор на события по линии сигнала. */
-export function watchesLine(settings, line) {
-  if (settings.notifyLines === NOTIFY_ALL_LINES) return true;
-  return Array.isArray(settings.notifyLines) && settings.notifyLines.includes(lineToKey(line));
-}
 
 /* --------------------------------- Вложения ---------------------------------- */
 
@@ -243,6 +259,7 @@ export function formatBytes(size) {
   return `${(value / (1024 * 1024)).toFixed(1)} МБ`;
 }
 
+/** Учетная запись главного администратора, создаваемая при первом запуске. */
 export const DEFAULT_ADMIN = Object.freeze({
   login: 'admin',
   password: 'admin123',

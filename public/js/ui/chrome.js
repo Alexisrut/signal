@@ -1,18 +1,19 @@
 /** Шапка приложения, глобальные баннеры и всплывающие уведомления. */
 
 import { html } from '../core/utils.js';
-import { STATUS, TASK_STATUS } from '/shared/constants.js';
+import { ROLE_LABEL, STATUS } from '/shared/constants.js';
 import * as store from '../data/store.js';
 import {
   currentActor,
   isAdmin,
+  isAuthenticated,
+  isContractor,
+  isSuperadmin,
   isVerifiedAdmin,
   isPendingVerification,
-  tasksEnabled,
   logout,
 } from '../domain/session.js';
-import { listMine, listAll } from '../domain/signals.js';
-import { listAll as listTasks } from '../domain/tasks.js';
+import { listMine, listAll, listUndistributed } from '../domain/signals.js';
 import { navigate } from './router.js';
 
 let toastHost = null;
@@ -86,20 +87,22 @@ export function renderHeader(currentPath = '/') {
   const actor = currentActor();
   const state = store.getState();
 
-  const activeMine = listMine().filter(isActiveStatus).length;
-  const activeAll = (listAll() ?? []).filter(isActiveStatus).length;
-  const openTasks = (listTasks() ?? []).filter((task) => task.status !== TASK_STATUS.DONE).length;
+  const links = [navLink('#/', 'Главная', currentPath)];
 
-  const links = [
-    navLink('#/', 'Главная', currentPath),
-    navLink('#/my', 'Мои сигналы', currentPath, activeMine || ''),
-  ];
+  if (isContractor(actor)) {
+    const activeMine = listMine().filter(isActiveStatus).length;
+    links.push(navLink('#/my', 'Мои сигналы', currentPath, activeMine || ''));
+  }
 
   if (isVerifiedAdmin(actor)) {
+    const activeAll = (listAll() ?? []).filter(isActiveStatus).length;
     links.push(navLink('#/admin', 'Дашборд', currentPath, activeAll || ''));
-    if (tasksEnabled(actor)) links.push(navLink('#/tasks', 'Задачи', currentPath, openTasks || ''));
-    links.push(navLink('#/admin/users', 'Администраторы', currentPath));
-    links.push(navLink('#/admin/profile', 'Профиль', currentPath));
+
+    // Распределение и учетные записи — исключительно зона главного администратора.
+    if (isSuperadmin(actor)) {
+      links.push(navLink('#/admin/distribution', 'Распределение', currentPath, (listUndistributed() ?? []).length || ''));
+      links.push(navLink('#/admin/users', 'Учетные записи', currentPath));
+    }
   }
 
   host.innerHTML = html`
@@ -120,14 +123,15 @@ export function renderHeader(currentPath = '/') {
 
       <div class="topbar__side">
         ${[state.offline ? html`<span class="conn conn--offline" title="Нет связи с сервером">офлайн</span>` : '']}
-        <span class="who who--${actor.role}">
-          <span class="who__role">${isAdmin(actor) ? 'Администратор' : 'Подрядчик'}</span>
-          <span class="who__name">${actor.displayName}</span>
-        </span>
         ${[
-          isAdmin(actor)
-            ? html`<button class="btn btn--ghost btn--sm" data-action="logout">Выйти</button>`
-            : html`<a class="btn btn--ghost btn--sm" href="#/admin/login">Вход для администратора</a>`,
+          isAuthenticated(actor)
+            ? html`<span class="who who--${actor.role}">
+                  <span class="who__role">${ROLE_LABEL[actor.role] ?? 'Пользователь'}</span>
+                  <span class="who__name">${actor.displayName}</span>
+                </span>
+                <button class="btn btn--ghost btn--sm" data-action="logout">Выйти</button>`
+            : html`<a class="btn btn--ghost btn--sm" href="#/login">Войти</a>
+                <a class="btn btn--primary btn--sm" href="#/register">Регистрация</a>`,
         ]}
       </div>
     </div>
@@ -144,8 +148,9 @@ export function renderHeader(currentPath = '/') {
   bindMenu(host);
 
   host.querySelector('[data-action="logout"]')?.addEventListener('click', async () => {
+    const wasAdmin = isAdmin();
     await logout();
-    showToast('Вы вышли из аккаунта администратора');
-    navigate('/');
+    showToast(wasAdmin ? 'Вы вышли из аккаунта администратора' : 'Вы вышли из системы');
+    navigate('/login');
   });
 }

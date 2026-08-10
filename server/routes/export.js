@@ -5,7 +5,7 @@
 
 import { forbidden, contentDisposition } from '../http.js';
 import { isVerifiedAdmin } from '../identity.js';
-import { buildSignalsWorkbook, buildTasksWorkbook, reportFilename } from '../domain/export.js';
+import { buildSignalsWorkbook, reportFilename } from '../domain/export.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -24,22 +24,12 @@ export async function exportSignals(req, res, { actor, url }) {
   if (!isVerifiedAdmin(actor)) throw forbidden('Экспорт доступен только администратору');
 
   const filters = {
-    line: url.searchParams.get('line') ?? 'all',
+    category: url.searchParams.get('category') ?? 'all',
     status: url.searchParams.get('status') ?? 'all',
+    assignment: url.searchParams.get('assignment') ?? 'all',
   };
 
-  const { buffer, rows } = await buildSignalsWorkbook(filters);
+  const { buffer, rows } = await buildSignalsWorkbook(filters, actor);
   console.info(`[export] сигналы: ${rows} строк, фильтры ${JSON.stringify(filters)}`);
   sendWorkbook(res, buffer, reportFilename('signals'), rows);
-}
-
-export async function exportTasks(req, res, { actor, url }) {
-  if (!isVerifiedAdmin(actor)) throw forbidden('Экспорт доступен только администратору');
-  if (!actor.settings.tasksDashboardEnabled) throw forbidden('Дашборд задач отключен в настройках профиля');
-
-  const filters = { status: url.searchParams.get('status') ?? 'all' };
-
-  const { buffer, rows } = await buildTasksWorkbook(filters);
-  console.info(`[export] задачи: ${rows} строк, фильтры ${JSON.stringify(filters)}`);
-  sendWorkbook(res, buffer, reportFilename('tasks'), rows);
 }

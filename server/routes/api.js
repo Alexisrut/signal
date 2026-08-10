@@ -1,56 +1,77 @@
 /** Обработчики /api/*. Вся авторизация выполняется здесь, до вызова сервисов. */
 
 import { sendJson, readJsonBody, badRequest, forbidden, notFound, HttpError } from '../http.js';
-import { createSession, destroySession, isAdmin, isVerifiedAdmin } from '../identity.js';
+import { createSession, destroySession, isAdmin, isContractor, isSuperadmin, isVerifiedAdmin } from '../identity.js';
 import { currentRevision } from '../events.js';
 import { deliveryMode } from '../mail/transport.js';
 import { SMTP_CONFIGURED, APP_URL } from '../config.js';
 
 import * as signalsService from '../domain/signals.js';
-import * as tasksService from '../domain/tasks.js';
-import * as adminsService from '../domain/admins.js';
+import * as usersService from '../domain/users.js';
 
 import { ESCALATION_MS, ROLE, STATUS } from '../../shared/constants.js';
 
+/** Гость получает только meta — этого достаточно, чтобы показать вход и регистрацию. */
+function requireActor(actor) {
+  if (!actor) throw new HttpError(401, 'Требуется вход в систему');
+  return actor;
+}
+
+function requireSuperadmin(actor) {
+  if (!isSuperadmin(requireActor(actor))) throw forbidden('Действие доступно только главному администратору');
+  return actor;
+}
+
+function publicActor(actor) {
+  if (!actor) return null;
+
+  const base = {
+    id: actor.id,
+    role: actor.role,
+    displayName: actor.displayName,
+    login: actor.login,
+    createdAt: actor.createdAt,
+  };
+
+  if (isContractor(actor)) return { ...base, companyName: actor.companyName, fullName: actor.fullName };
+  return { ...base, email: actor.email, isEmailVerified: actor.isEmailVerified, categories: actor.categories };
+}
+
+function meta() {
+  return {
+    rev: currentRevision(),
+    escalationMs: ESCALATION_MS,
+    mailMode: deliveryMode,
+    smtpConfigured: SMTP_CONFIGURED,
+    appUrl: APP_URL,
+    defaultAdminPresent: usersService.hasDefaultAdmin(),
+  };
+}
+
 /** Полный снимок состояния для текущего пользователя — основа live-режима. */
 export function getState(req, res, { actor }) {
+  if (!actor) {
+    sendJson(res, 200, { actor: null, mySignals: null, allSignals: null, undistributed: null, users: null, meta: meta() });
+    return;
+  }
+
   const verified = isVerifiedAdmin(actor);
 
   const payload = {
-    actor: {
-      id: actor.id,
-      role: actor.role,
-      displayName: actor.displayName,
-      anonymous: Boolean(actor.anonymous),
-      ...(isAdmin(actor)
-        ? {
-            login: actor.login,
-            email: actor.email,
-            isEmailVerified: actor.isEmailVerified,
-            settings: actor.settings,
-            createdAt: actor.createdAt,
-          }
-        : {}),
-    },
+    actor: publicActor(actor),
     // Изоляция подрядчиков живет здесь: чужие сигналы просто не попадают в ответ.
-    mySignals: signalsService.listByAuthor(actor.id),
-    allSignals: verified ? signalsService.listAll() : null,
-    tasks: verified && actor.settings.tasksDashboardEnabled ? tasksService.listAll() : null,
-    admins: verified ? adminsService.listAdmins() : null,
-    meta: {
-      rev: currentRevision(),
-      escalationMs: ESCALATION_MS,
-      mailMode: deliveryMode,
-      smtpConfigured: SMTP_CONFIGURED,
-      appUrl: APP_URL,
-      defaultAdminPresent: adminsService.hasDefaultAdmin(),
-    },
+    mySignals: isContractor(actor) ? signalsService.listByAuthor(actor.id) : null,
+    // Обычный администратор видит только разрешенные ему категории.
+    allSignals: verified ? signalsService.listForAdmin(actor) : null,
+    // Раздел «Распределение» существует только для главного администратора.
+    undistributed: verified && isSuperadmin(actor) ? signalsService.listUndistributed() : null,
+    users: isSuperadmin(actor) ? usersService.listUsers() : null,
+    meta: meta(),
   };
 
   if (verified) {
-    payload.authorLabels = Object.fromEntries(
-      payload.allSignals.map((signal) => [signal.id, signalsService.authorLabel(signal)]),
-    );
+    const visible = [...payload.allSignals, ...(payload.undistributed ?? [])];
+    payload.authorLabels = Object.fromEntries(visible.map((signal) => [signal.id, signalsService.authorLabel(signal)]));
   }
 
   sendJson(res, 200, payload);
@@ -59,26 +80,49 @@ export function getState(req, res, { actor }) {
 /* ---------------------------------- сигналы ---------------------------------- */
 
 export async function createSignal(req, res, { actor }) {
+  if (!isContractor(requireActor(actor))) throw forbidden('Создавать сигналы может только подрядчик');
   const body = await readJsonBody(req);
   const signal = signalsService.createSignal(body, actor);
   sendJson(res, 201, { signal });
 }
 
 export async function changeSignalStatus(req, res, { actor, params }) {
+  requireActor(actor);
   const body = await readJsonBody(req);
   const signal = signalsService.changeStatus(params.id, body.status, actor);
   sendJson(res, 200, { signal });
 }
 
 export function getSignal(req, res, { actor, params }) {
+  requireActor(actor);
   const signal = signalsService.getForActor(params.id, actor);
   if (!signal) throw notFound('Сигнал не найден');
   sendJson(res, 200, { signal });
 }
 
+export async function updateSignal(req, res, { actor, params }) {
+  requireActor(actor);
+  const body = await readJsonBody(req);
+  sendJson(res, 200, { signal: signalsService.updateSignal(params.id, body, actor) });
+}
+
+/** Распределение сигнала по категории — раздел главного администратора. */
+export async function distributeSignal(req, res, { actor, params }) {
+  requireSuperadmin(actor);
+  const body = await readJsonBody(req);
+  sendJson(res, 200, { signal: signalsService.distribute(params.id, body.category, actor) });
+}
+
+/** Принять сигнал в работу (`{assign: true}`) или снять с себя (`{assign: false}`). */
+export async function assignSignal(req, res, { actor, params }) {
+  if (!isVerifiedAdmin(requireActor(actor))) throw forbidden('Принимать в работу может только администратор');
+  const body = await readJsonBody(req);
+  sendJson(res, 200, { signal: signalsService.setAssignee(params.id, actor, body.assign !== false, body.userId) });
+}
+
 /** Демо-инструмент: сдвиг меток времени, чтобы увидеть работу автоэскалации. */
 export function ageSignal(req, res, { actor, params }) {
-  if (!isVerifiedAdmin(actor)) throw forbidden('Доступно только администратору');
+  if (!isVerifiedAdmin(requireActor(actor))) throw forbidden('Доступно только администратору');
   const signal = signalsService.getById(params.id);
   if (!signal) throw notFound('Сигнал не найден');
   if (signal.status !== STATUS.YELLOW) throw badRequest('Состарить можно только Желтый сигнал');
@@ -86,23 +130,27 @@ export function ageSignal(req, res, { actor, params }) {
   sendJson(res, 200, { signal: signalsService.ageSignal(params.id, ESCALATION_MS) });
 }
 
-/* ----------------------------------- вход ------------------------------------ */
+/* ------------------------------ вход и регистрация ---------------------------- */
 
+/** Единая форма входа: логин подрядчика — название компании, у администратора — свой. */
 export async function login(req, res) {
   const { login: userLogin, password } = await readJsonBody(req);
-  const admin = adminsService.authenticate(userLogin, password);
-  if (!admin) throw new HttpError(401, 'Неверный логин или пароль');
+  const user = usersService.authenticate(userLogin, password);
+  if (!user) throw new HttpError(401, 'Неверный логин или пароль');
 
-  createSession(res, admin.id);
-  sendJson(res, 200, {
-    admin: {
-      id: admin.id,
-      displayName: admin.displayName,
-      login: admin.login,
-      email: admin.email,
-      isEmailVerified: admin.isEmailVerified,
-    },
-  });
+  createSession(res, user.id);
+  sendJson(res, 200, { user: publicActor(user) });
+}
+
+/** Самостоятельная регистрация подрядчика. */
+export async function register(req, res, { actor }) {
+  if (actor) throw badRequest('Вы уже вошли в систему');
+
+  const body = await readJsonBody(req);
+  const user = usersService.registerContractor(body);
+
+  createSession(res, user.id);
+  sendJson(res, 201, { user: publicActor(user) });
 }
 
 export function logout(req, res) {
@@ -110,64 +158,49 @@ export function logout(req, res) {
   sendJson(res, 200, { ok: true });
 }
 
-/* ------------------------------ администраторы -------------------------------- */
+/* ------------------------------ учетные записи -------------------------------- */
 
 export async function createAdmin(req, res, { actor }) {
-  if (!isVerifiedAdmin(actor)) throw forbidden('Создавать администраторов может только подтвержденный администратор');
+  requireSuperadmin(actor);
 
   const body = await readJsonBody(req);
-  const { admin, delivery } = await adminsService.createAdmin(body, actor);
+  const { admin, delivery } = await usersService.createAdmin(body, actor);
 
   sendJson(res, 201, {
-    admin: { id: admin.id, displayName: admin.displayName, login: admin.login, email: admin.email },
+    admin: {
+      id: admin.id,
+      displayName: admin.displayName,
+      login: admin.login,
+      email: admin.email,
+      categories: admin.categories,
+    },
     delivery: { mode: delivery.mode, ok: delivery.ok, mailId: delivery.id, error: delivery.error },
   });
 }
 
+/** Набор категорий, видимых конкретному администратору. */
+export async function updateUserCategories(req, res, { actor, params }) {
+  requireSuperadmin(actor);
+  const body = await readJsonBody(req);
+  const user = usersService.updateCategories(params.id, body.categories, actor);
+  sendJson(res, 200, { user: { id: user.id, login: user.login, categories: user.categories } });
+}
+
 export async function resendVerification(req, res, { actor }) {
-  if (!isAdmin(actor)) throw forbidden('Только для администраторов');
+  if (!isAdmin(requireActor(actor))) throw forbidden('Только для администраторов');
   if (actor.isEmailVerified) throw badRequest('Почта уже подтверждена');
 
-  const delivery = await adminsService.issueVerification(actor.id);
+  const delivery = await usersService.issueVerification(actor.id);
   sendJson(res, 200, { delivery: { mode: delivery.mode, ok: delivery.ok, mailId: delivery.id } });
-}
-
-export async function updateSettings(req, res, { actor }) {
-  if (!isAdmin(actor)) throw forbidden('Настройки доступны только администратору');
-
-  const body = await readJsonBody(req);
-  const settings = adminsService.updateSettings(actor.id, body.settings ?? body);
-  sendJson(res, 200, { settings });
-}
-
-/* ----------------------------------- задачи ----------------------------------- */
-
-function assertTasksAvailable(actor) {
-  if (!isVerifiedAdmin(actor)) throw forbidden('Модуль задач доступен только подтвержденному администратору');
-  if (!actor.settings.tasksDashboardEnabled) throw forbidden('Дашборд задач отключен в настройках профиля');
-}
-
-export async function createTask(req, res, { actor }) {
-  assertTasksAvailable(actor);
-  const body = await readJsonBody(req);
-  sendJson(res, 201, { task: tasksService.createTask(body, actor) });
-}
-
-export async function changeTaskStatus(req, res, { actor, params }) {
-  assertTasksAvailable(actor);
-  const body = await readJsonBody(req);
-  sendJson(res, 200, { task: tasksService.changeStatus(params.id, body.status, actor) });
-}
-
-export function getTask(req, res, { actor, params }) {
-  assertTasksAvailable(actor);
-  const task = tasksService.getById(params.id);
-  if (!task) throw notFound('Задача не найдена');
-  sendJson(res, 200, { task });
 }
 
 /* ------------------------------ прочее ---------------------------------------- */
 
 export function whoami(req, res, { actor }) {
-  sendJson(res, 200, { id: actor.id, role: actor.role, isAdmin: actor.role === ROLE.ADMIN });
+  sendJson(res, 200, {
+    id: actor?.id ?? null,
+    role: actor?.role ?? null,
+    isAdmin: isAdmin(actor),
+    isSuperadmin: actor?.role === ROLE.SUPERADMIN,
+  });
 }

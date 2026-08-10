@@ -1,11 +1,12 @@
 /**
- * Двухшаговое создание сигнала.
- * Шаг 1 — выбор линии (с возможностью пропуска), шаг 2 — форма со строгой валидацией
- * и зоной загрузки вложений. Флоу общий для подрядчика и для администратора.
+ * Создание сигнала подрядчиком.
+ *
+ * Категорию подрядчик не выбирает: сигнал уходит нераспределенным и попадает
+ * в раздел «Распределение» к главному администратору. Валидация строгая —
+ * пустые поля подсвечиваются до любого сетевого вызова.
  */
 
 import { html } from '../../core/utils.js';
-import { LINES, LINE, ROLE, lineLabel } from '/shared/constants.js';
 import { validateSignalInput } from '/shared/validation.js';
 import { currentActor } from '../../domain/session.js';
 import { createSignal } from '../../domain/signals.js';
@@ -14,79 +15,14 @@ import { fileField, bindFileField } from '../components.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
 
-/** Черновик формы живет между шагами и переживает возврат «назад». */
-const draft = { line: LINE.NONE, contractorName: '', sector: '', description: '' };
+/** Черновик переживает уход со страницы и возврат назад. */
+const draft = { contractorName: '', sector: '', description: '' };
 
 function resetDraft() {
-  draft.line = LINE.NONE;
   draft.contractorName = '';
   draft.sector = '';
   draft.description = '';
 }
-
-function queryToLine(value) {
-  if (!value || value === 'none') return LINE.NONE;
-  return LINES.some((line) => line.id === value) ? value : LINE.NONE;
-}
-
-function lineToQuery(line) {
-  return line === LINE.NONE ? 'none' : line;
-}
-
-/* --------------------------------- Шаг 1 ------------------------------------- */
-
-export const chooseLineView = {
-  live: false,
-
-  render() {
-    const options = LINES.map(
-      (line) => html`<button class="line-option ${draft.line === line.id ? 'is-selected' : ''}"
-        data-line="${line.id}" type="button">
-        <span class="line-option__mark line-option__mark--${line.id}"></span>
-        <span class="line-option__body">
-          <strong>${line.label}</strong>
-          <small>${line.hint}</small>
-        </span>
-      </button>`,
-    );
-
-    return html`
-      <section class="wizard">
-        <div class="wizard__steps">
-          <span class="wizard__step is-active">1. Линия сигнала</span>
-          <span class="wizard__sep"></span>
-          <span class="wizard__step">2. Описание проблемы</span>
-        </div>
-
-        <h1 class="wizard__title">К какой линии относится проблема?</h1>
-        <p class="wizard__lead">Выбор линии помогает быстрее направить сигнал нужным специалистам. Шаг можно пропустить.</p>
-
-        <div class="line-options">${options}</div>
-
-        <div class="wizard__actions">
-          <a class="btn btn--ghost" href="#/">Отмена</a>
-          <button class="btn btn--secondary" type="button" data-action="skip">Пропустить</button>
-        </div>
-      </section>
-    `;
-  },
-
-  mount(root) {
-    root.querySelectorAll('[data-line]').forEach((button) => {
-      button.addEventListener('click', () => {
-        draft.line = button.dataset.line;
-        navigate(`/new/form?line=${lineToQuery(draft.line)}`);
-      });
-    });
-
-    root.querySelector('[data-action="skip"]').addEventListener('click', () => {
-      draft.line = LINE.NONE;
-      navigate('/new/form?line=none');
-    });
-  },
-};
-
-/* --------------------------------- Шаг 2 ------------------------------------- */
 
 const FIELDS = [
   { name: 'contractorName', label: 'Подрядчик', placeholder: 'Например: ООО «СтройМонтаж»', type: 'input' },
@@ -99,12 +35,14 @@ const FIELDS = [
   },
 ];
 
-export const signalFormView = {
+export const newSignalView = {
   live: false,
 
-  render(ctx) {
-    draft.line = queryToLine(ctx.query.line);
+  render() {
     const actor = currentActor();
+
+    // Название компании подставляется сразу: подрядчик сообщает о себе.
+    if (!draft.contractorName && actor.companyName) draft.contractorName = actor.companyName;
 
     const fields = FIELDS.map((field) => {
       const control =
@@ -123,17 +61,10 @@ export const signalFormView = {
 
     return html`
       <section class="wizard">
-        <div class="wizard__steps">
-          <a class="wizard__step is-done" href="#/new">1. Линия сигнала</a>
-          <span class="wizard__sep"></span>
-          <span class="wizard__step is-active">2. Описание проблемы</span>
-        </div>
-
         <h1 class="wizard__title">Опишите проблему</h1>
         <p class="wizard__lead">
-          Линия: <strong>${lineLabel(draft.line)}</strong> ·
-          <a class="link" href="#/new">изменить</a>
-          ${[actor.role === ROLE.ADMIN ? html` · сигнал будет создан от имени администратора` : '']}
+          Сигнал получит статус «Новая проблема» и уйдет главному администратору на распределение
+          по категориям. Следить за ходом рассмотрения можно в разделе «Мои сигналы».
         </p>
 
         <form class="form" id="signal-form" novalidate>
@@ -141,7 +72,7 @@ export const signalFormView = {
           ${[fileField({ label: 'Вложения (необязательно)' })]}
           <div class="form__hint form__hint--error" data-role="summary" hidden></div>
           <div class="wizard__actions">
-            <a class="btn btn--ghost" href="#/new">Назад</a>
+            <a class="btn btn--ghost" href="#/my">Отмена</a>
             <button class="btn btn--primary" type="submit">Отправить сигнал</button>
           </div>
         </form>
@@ -187,7 +118,6 @@ export const signalFormView = {
       event.preventDefault();
 
       const payload = {
-        line: draft.line,
         contractorName: controls.get('contractorName').value,
         sector: controls.get('sector').value,
         description: controls.get('description').value,
@@ -227,7 +157,7 @@ export const signalFormView = {
       }
     });
 
-    // Возврат к первому шагу не должен терять уже введенный текст.
+    // Уход со страницы не должен терять уже введенный текст.
     return () => {
       if (submitted) return;
       controls.forEach((control, name) => {

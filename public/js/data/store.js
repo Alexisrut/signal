@@ -17,8 +17,8 @@ let state = {
   actor: null,
   mySignals: [],
   allSignals: null,
-  tasks: null,
-  admins: null,
+  undistributed: null,
+  users: null,
   authorLabels: {},
   meta: {},
 };

@@ -1,22 +1,21 @@
 /**
- * Дашборд администратора — «карта сигналов»: все сигналы системы,
- * сгруппированные по линиям, с фильтрами по линии и статусу и экспортом в Excel.
+ * Дашборд администратора — «карта сигналов»: сигналы, сгруппированные по категориям,
+ * с фильтрами по категории, статусу и принятию в работу и экспортом в Excel.
+ *
+ * Колонки строятся только из тех категорий, которые открыты текущему
+ * администратору: главный видит все, остальные — выданный им набор.
  * Состояние фильтров живет в query-строке: оно переживает live-перерисовку
  * и теми же параметрами уходит в серверный отчет.
  */
 
 import { html } from '../../core/utils.js';
-import { LINE, LINE_COLUMNS, STATUS_META, STATUS_ORDER } from '/shared/constants.js';
+import { ASSIGNMENT, ASSIGNMENT_FILTERS, CATEGORIES, STATUS_META, STATUS_ORDER } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
-import { listAll, filterSignals, countByStatus } from '../../domain/signals.js';
+import { currentActor, isSuperadmin, myCategories } from '../../domain/session.js';
+import { listAll, listUndistributed, filterSignals, countByStatus } from '../../domain/signals.js';
 import { downloadReport } from '../../domain/reports.js';
 import { signalCard, statCounters, statusLegend, emptyState } from '../components.js';
 import { showToast } from '../chrome.js';
-
-const LINE_FILTERS = [
-  { id: 'all', label: 'Все линии' },
-  ...LINE_COLUMNS.map((column) => ({ id: column.id === LINE.NONE ? 'none' : column.id, label: column.label })),
-];
 
 const STATUS_FILTERS = [
   { id: 'all', label: 'Все статусы' },
@@ -34,19 +33,21 @@ export const adminDashboardView = {
   live: true,
 
   render(ctx) {
-    const line = ctx.query.line ?? 'all';
+    const actor = currentActor();
+    const allowed = CATEGORIES.filter((category) => myCategories(actor).includes(category.id));
+
+    const category = ctx.query.category ?? 'all';
     const status = ctx.query.status ?? 'all';
+    const assignment = ctx.query.assignment ?? ASSIGNMENT.ALL;
     const now = Date.now();
 
     const all = listAll() ?? [];
-    const visible = filterSignals(all, { line, status });
+    const visible = filterSignals(all, { category, status, assignment });
     const counters = countByStatus(all);
+    const waiting = (listUndistributed() ?? []).length;
 
-    const columns = (line === 'all'
-      ? LINE_COLUMNS
-      : LINE_COLUMNS.filter((column) => (column.id === LINE.NONE ? 'none' : column.id) === line)
-    ).map((column) => {
-      const items = visible.filter((signal) => signal.line === column.id);
+    const columns = (category === 'all' ? allowed : allowed.filter((item) => item.id === category)).map((column) => {
+      const items = visible.filter((signal) => signal.category === column.id);
       const active = items.filter((signal) => isActive(signal.status)).length;
       const cards = items.map((signal) => signalCard(signal, { href: `#/admin/signal/${signal.id}`, now }));
 
@@ -61,39 +62,69 @@ export const adminDashboardView = {
       </section>`;
     });
 
-    const href = (nextLine, nextStatus) => `#/admin?line=${nextLine}&status=${nextStatus}`;
+    const href = (nextCategory, nextStatus, nextAssignment = assignment) =>
+      `#/admin?category=${nextCategory}&status=${nextStatus}&assignment=${nextAssignment}`;
 
-    const board = all.length
-      ? html`<div class="board board--${line === 'all' ? 'wide' : 'single'}">${columns}</div>`
-      : emptyState(
-          'В системе пока нет сигналов',
-          'Как только подрядчик создаст обращение, оно появится здесь автоматически.',
-          html`<a class="btn btn--primary" href="#/new">Создать сигнал</a>`,
-        );
+    const categoryFilters = [{ id: 'all', label: 'Все категории' }, ...allowed];
+
+    const board = !allowed.length
+      ? emptyState(
+          'Вам не открыта ни одна категория',
+          'Доступ к категориям сигналов выдает главный администратор в разделе «Учетные записи».',
+        )
+      : all.length
+        ? html`<div class="board board--${category === 'all' ? 'wide' : 'single'}">${columns}</div>`
+        : emptyState(
+            'В доступных вам категориях пока нет сигналов',
+            'Сигнал появится здесь, как только главный администратор распределит его в вашу категорию.',
+          );
 
     return html`
       <section class="page">
         <header class="page__head">
           <div>
             <h1 class="page__title">Карта сигналов</h1>
-            <p class="page__lead">Все обращения системы в реальном времени.</p>
+            <p class="page__lead">Сигналы доступных вам категорий в реальном времени.</p>
           </div>
           <div class="page__head-actions">
             <button class="btn btn--secondary" data-action="export">Экспорт в Excel</button>
-            <a class="btn btn--primary" href="#/new">Создать сигнал</a>
+            ${[
+              isSuperadmin(actor)
+                ? html`<a class="btn btn--primary" href="#/admin/distribution"
+                    >Распределение${waiting ? ` · ${waiting}` : ''}</a
+                  >`
+                : '',
+            ]}
           </div>
         </header>
+
+        ${[
+          isSuperadmin(actor) && waiting
+            ? html`<div class="banner banner--info">
+                Ожидают распределения: <b>${waiting}</b>.
+                <a class="link" href="#/admin/distribution">Открыть раздел</a>
+              </div>`
+            : '',
+        ]}
 
         ${[statCounters(counters)]}
 
         <div class="filters">
           <div class="filters__group">
-            <span class="filters__label">Линия</span>
-            <div class="chips">${LINE_FILTERS.map((filter) => chipLink(filter, line, (id) => href(id, status)))}</div>
+            <span class="filters__label">Категория</span>
+            <div class="chips">
+              ${categoryFilters.map((filter) => chipLink(filter, category, (id) => href(id, status)))}
+            </div>
           </div>
           <div class="filters__group">
             <span class="filters__label">Статус</span>
-            <div class="chips">${STATUS_FILTERS.map((filter) => chipLink(filter, status, (id) => href(line, id)))}</div>
+            <div class="chips">${STATUS_FILTERS.map((filter) => chipLink(filter, status, (id) => href(category, id)))}</div>
+          </div>
+          <div class="filters__group">
+            <span class="filters__label">В работе</span>
+            <div class="chips">
+              ${ASSIGNMENT_FILTERS.map((filter) => chipLink(filter, assignment, (id) => href(category, status, id)))}
+            </div>
           </div>
         </div>
 
@@ -116,8 +147,9 @@ export const adminDashboardView = {
       try {
         // В отчет уходят ровно те же фильтры, что видны на экране.
         const { filename, rows } = await downloadReport('signals', {
-          line: ctx.query.line ?? 'all',
+          category: ctx.query.category ?? 'all',
           status: ctx.query.status ?? 'all',
+          assignment: ctx.query.assignment ?? ASSIGNMENT.ALL,
         });
         showToast(`Отчет ${filename} сформирован (${rows} строк)`, 'success');
       } catch (error) {

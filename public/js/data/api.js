@@ -39,18 +39,21 @@ export const api = {
   getState: () => request('GET', '/api/state'),
 
   createSignal: (input) => request('POST', '/api/signals', input),
+  updateSignal: (id, input) => request('PUT', `/api/signals/${encodeURIComponent(id)}`, input),
   changeSignalStatus: (id, status) => request('POST', `/api/signals/${encodeURIComponent(id)}/status`, { status }),
+  assignSignal: (id, assign, userId) =>
+    request('POST', `/api/signals/${encodeURIComponent(id)}/assign`, { assign, userId }),
+  distributeSignal: (id, category) => request('POST', `/api/signals/${encodeURIComponent(id)}/category`, { category }),
   ageSignal: (id) => request('POST', `/api/signals/${encodeURIComponent(id)}/age`),
-
-  createTask: (input) => request('POST', '/api/tasks', input),
-  changeTaskStatus: (id, status) => request('POST', `/api/tasks/${encodeURIComponent(id)}/status`, { status }),
 
   login: (login, password) => request('POST', '/api/auth/login', { login, password }),
   logout: () => request('POST', '/api/auth/logout'),
+  register: (input) => request('POST', '/api/auth/register', input),
 
   createAdmin: (input) => request('POST', '/api/admins', input),
+  updateUserCategories: (id, categories) =>
+    request('PUT', `/api/users/${encodeURIComponent(id)}/categories`, { categories }),
   resendVerification: () => request('POST', '/api/verification/resend'),
-  updateSettings: (settings) => request('PUT', '/api/settings', { settings }),
 
   /** Загрузка файлов идет multipart-ом, поэтому в обход request(). */
   async uploadFiles(fileList) {

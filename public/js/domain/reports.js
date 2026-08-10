@@ -17,7 +17,7 @@ function filenameFrom(disposition, fallback) {
 }
 
 /**
- * @param {'signals'|'tasks'} kind
+ * @param {'signals'} kind
  * @param {Record<string, string>} params активные фильтры дашборда
  * @returns {Promise<{filename: string, rows: number}>}
  */

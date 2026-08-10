@@ -8,7 +8,7 @@
 import {
   STATUS_META,
   NOTIFICATION_EVENT,
-  lineLabel,
+  categoryLabel,
   formatBytes,
 } from '../../shared/constants.js';
 
@@ -148,7 +148,7 @@ export function signalNotificationEmail({ event, signal, actor, url }) {
           'Статус',
           `<span style="display:inline-block;padding:3px 11px;border-radius:999px;background:${accent};color:#fff;font-size:13px;font-weight:700;">${escapeHtml(meta.label)}</span>`,
         ],
-        ['Линия', escapeHtml(lineLabel(signal.line))],
+        ['Категория', escapeHtml(categoryLabel(signal.category))],
         ['Дата изменения', escapeHtml(formatDateTime(changedAt))],
         ['Кто изменил', escapeHtml(actor?.displayName ?? 'Система')],
         ['Подрядчик', escapeHtml(signal.contractorName)],
@@ -159,7 +159,7 @@ export function signalNotificationEmail({ event, signal, actor, url }) {
     ctaLabel: 'Открыть карточку сигнала',
     ctaUrl: url,
     footerNote:
-      'Вы получили это письмо, потому что в настройках вашей учетной записи включены уведомления по этой линии. Отключить можно в профиле администратора.',
+      'Письмо отправлено всем администраторам системы мониторинга сигналов с подтвержденным адресом почты.',
   });
 
   const text = [
@@ -167,7 +167,7 @@ export function signalNotificationEmail({ event, signal, actor, url }) {
     '',
     `ID сигнала: ${signal.id}`,
     `Статус: ${meta.label}`,
-    `Линия: ${lineLabel(signal.line)}`,
+    `Категория: ${categoryLabel(signal.category)}`,
     `Дата изменения: ${formatDateTime(changedAt)}`,
     `Подрядчик: ${signal.contractorName}`,
     `Сектор: ${signal.sector}`,
@@ -176,5 +176,5 @@ export function signalNotificationEmail({ event, signal, actor, url }) {
     `Карточка сигнала: ${url}`,
   ].join('\n');
 
-  return { subject: `${EVENT_TITLE[event]} · ${lineLabel(signal.line)} · ${signal.contractorName}`, html, text };
+  return { subject: `${EVENT_TITLE[event]} · ${categoryLabel(signal.category)} · ${signal.contractorName}`, html, text };
 }

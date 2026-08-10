@@ -5,16 +5,30 @@
 
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
-import { ROLE } from '/shared/constants.js';
+import { ROLE, isAdminRole } from '/shared/constants.js';
 
-const ANONYMOUS = { id: '', role: ROLE.CONTRACTOR, displayName: 'Подрядчик', anonymous: true };
+/** Гость: в системе не представлен, но интерфейсу нужен объект, а не null. */
+const GUEST = Object.freeze({ id: '', role: null, displayName: 'Гость', guest: true });
 
 export function currentActor() {
-  return store.getState().actor ?? ANONYMOUS;
+  return store.getState().actor ?? GUEST;
 }
 
+export function isAuthenticated(actor = currentActor()) {
+  return Boolean(actor.id);
+}
+
+export function isContractor(actor = currentActor()) {
+  return actor.role === ROLE.CONTRACTOR;
+}
+
+/** Любой администратор — и обычный, и главный. */
 export function isAdmin(actor = currentActor()) {
-  return actor.role === ROLE.ADMIN;
+  return isAdminRole(actor.role);
+}
+
+export function isSuperadmin(actor = currentActor()) {
+  return actor.role === ROLE.SUPERADMIN;
 }
 
 /** Полноправный администратор: вошел И подтвердил почту. */
@@ -27,16 +41,14 @@ export function isPendingVerification(actor = currentActor()) {
   return isAdmin(actor) && actor.isEmailVerified !== true;
 }
 
-export function settings(actor = currentActor()) {
-  return actor.settings ?? null;
+/** Категории, доступные текущему пользователю (у главного администратора — все). */
+export function myCategories(actor = currentActor()) {
+  return actor.categories ?? [];
 }
 
-export function tasksEnabled(actor = currentActor()) {
-  return isVerifiedAdmin(actor) && actor.settings?.tasksDashboardEnabled === true;
-}
-
-export function listAdmins() {
-  return store.getState().admins ?? [];
+/** Полный список учетных записей — сервер отдает его только главному администратору. */
+export function listUsers() {
+  return store.getState().users ?? [];
 }
 
 /* --------------------------------- действия ---------------------------------- */
@@ -44,7 +56,13 @@ export function listAdmins() {
 export async function login(userLogin, password) {
   const result = await api.login(userLogin, password);
   await store.refresh();
-  return result.admin;
+  return result.user;
+}
+
+export async function register(input) {
+  const result = await api.register(input);
+  await store.refresh();
+  return result.user;
 }
 
 export async function logout() {
@@ -58,12 +76,12 @@ export async function createAdmin(input) {
   return result;
 }
 
-export async function resendVerification() {
-  return api.resendVerification();
+export async function updateCategories(userId, categories) {
+  const result = await api.updateUserCategories(userId, categories);
+  await store.refresh();
+  return result.user;
 }
 
-export async function updateSettings(next) {
-  const result = await api.updateSettings(next);
-  await store.refresh();
-  return result.settings;
+export async function resendVerification() {
+  return api.resendVerification();
 }
