@@ -41,6 +41,7 @@
   --ink-gray: #b3bfcd;
 
   --topbar-bg: rgba(13, 17, 23, 0.82);
+  --column-bg: rgba(22, 29, 40, 0.6);
   --glow-1: rgba(79, 140, 255, 0.12);
   --glow-2: rgba(245, 197, 66, 0.08);
 
@@ -79,6 +80,7 @@
   --ink-gray: #4c5a70;
 
   --topbar-bg: rgba(255, 255, 255, 0.88);
+  --column-bg: rgba(220, 227, 238, 0.55);
   --glow-1: rgba(47, 107, 221, 0.1);
   --glow-2: rgba(201, 138, 6, 0.07);
 
@@ -882,7 +884,7 @@ code, .mono {
 }
 
 .column {
-  background: rgba(22, 29, 40, 0.6);
+  background: var(--column-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
