@@ -95,8 +95,8 @@ export function verificationEmail({ user, url, ttlHours }) {
     accent: '#3b74e8',
     bodyHtml: `
       <p style="margin:0 0 14px;">Здравствуйте, ${escapeHtml(user.displayName)}!</p>
-      <p style="margin:0 0 14px;">Для учетной записи администратора <b>${escapeHtml(user.login)}</b> в системе мониторинга сигналов указан этот адрес.</p>
-      <p style="margin:0;">Подтвердите почту — до этого вход в панель управления заблокирован. Ссылка действует ${ttlHours} ч.</p>`,
+      <p style="margin:0 0 14px;">Для учетной записи <b>${escapeHtml(user.login)}</b> в системе мониторинга сигналов указан этот адрес.</p>
+      <p style="margin:0;">Подтверждение нужно для восстановления пароля и писем — работе в системе оно не мешает. Ссылка действует ${ttlHours} ч.</p>`,
     ctaLabel: 'Подтвердить почту',
     ctaUrl: url,
     footerNote: 'Если вы не создавали учетную запись, просто проигнорируйте это письмо.',
@@ -107,21 +107,50 @@ export function verificationEmail({ user, url, ttlHours }) {
   return { subject: `Подтверждение почты · ${user.login}`, html, text };
 }
 
+/* --------------------------- восстановление пароля ---------------------------- */
+
+export function passwordResetEmail({ user, url, ttlMinutes }) {
+  const title = 'Восстановление пароля';
+  const html = layout({
+    title,
+    accent: '#3b74e8',
+    bodyHtml: `
+      <p style="margin:0 0 14px;">Здравствуйте, ${escapeHtml(user.displayName)}!</p>
+      <p style="margin:0 0 14px;">Кто-то запросил новый пароль для учетной записи <b>${escapeHtml(user.login)}</b>.</p>
+      <p style="margin:0;">Ссылка одноразовая и действует ${ttlMinutes} мин. После смены пароля все открытые сессии завершатся.</p>`,
+    ctaLabel: 'Задать новый пароль',
+    ctaUrl: url,
+    footerNote: 'Если вы не запрашивали восстановление, просто проигнорируйте письмо — пароль останется прежним.',
+  });
+
+  const text = `Здравствуйте, ${user.displayName}!\n\nНовый пароль для учетной записи «${user.login}»:\n${url}\n\nСсылка действует ${ttlMinutes} мин.`;
+
+  return { subject: `Восстановление пароля · ${user.login}`, html, text };
+}
+
 /* ------------------------------- уведомления --------------------------------- */
 
 const EVENT_TITLE = {
   [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
   [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
   [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
+  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
 };
 
 const EVENT_LEAD = {
   [NOTIFICATION_EVENT.CREATE]: 'Подрядчик сообщил о новой проблеме.',
   [NOTIFICATION_EVENT.RED]: 'Проблема не решена дольше 48 часов — система эскалировала сигнал.',
-  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал переведен в терминальный статус.',
+  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал переведен в закрытый статус.',
+  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возвращен в активную фазу, отсчет времени решения продолжен.',
 };
 
-export function signalNotificationEmail({ event, signal, actor, url }) {
+const FOOTER_NOTE = {
+  staff: 'Письмо отправлено сотрудникам, подписанным на это событие. Подписки настраиваются в разделе «Аккаунт».',
+  contractor:
+    'Письмо отправлено автору обращения. Отключить уведомления можно в разделе «Аккаунт».',
+};
+
+export function signalNotificationEmail({ event, signal, actor, url, audience = 'staff' }) {
   const meta = STATUS_META[signal.status];
   const accent = STATUS_COLOR[signal.status] ?? '#3b74e8';
   const changedAt = signal.history.at(-1)?.at ?? signal.updatedAt;
@@ -158,8 +187,7 @@ export function signalNotificationEmail({ event, signal, actor, url }) {
       ])}`,
     ctaLabel: 'Открыть карточку сигнала',
     ctaUrl: url,
-    footerNote:
-      'Письмо отправлено всем администраторам системы мониторинга сигналов с подтвержденным адресом почты.',
+    footerNote: FOOTER_NOTE[audience] ?? FOOTER_NOTE.staff,
   });
 
   const text = [

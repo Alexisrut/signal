@@ -2,8 +2,13 @@
  * Учетные записи.
  *
  * Подрядчик регистрируется сам: логином служит название его компании.
- * Учетные записи администраторов заводит только главный администратор,
- * он же выбирает, какие категории сигналов видит каждый из них.
+ * Учетные записи сотрудников — администраторов, руководителей и главных
+ * администраторов — заводит только главный администратор, он же выбирает
+ * категории сигналов и удаляет ненужные учетные записи.
+ *
+ * Подтверждение почты необязательное: оно ничего не блокирует и нужно только
+ * для восстановления пароля и писем. Само восстановление живет здесь же —
+ * одноразовый токен с коротким сроком жизни.
  */
 
 import { sql } from '../db.js';
@@ -11,13 +16,29 @@ import { uid, randomToken, randomSalt, hashPassword, verifyPassword } from '../c
 import { badRequest, forbidden, notFound } from '../http.js';
 import { publish } from '../events.js';
 import { toUser, findUser, findByLogin, findByEmail } from '../identity.js';
-import { sendVerificationEmail } from '../mail/notifier.js';
+import { sendVerificationEmail, sendPasswordResetEmail } from '../mail/notifier.js';
 import { deliveryMode } from '../mail/transport.js';
 
-import { ROLE, CATEGORY_IDS, EMAIL_TOKEN_TTL_MS, isAdminRole } from '../../shared/constants.js';
-import { validateAdminInput, validateContractorInput } from '../../shared/validation.js';
+import {
+  ROLE,
+  ACCOUNT_TYPE_IDS,
+  CATEGORY_IDS,
+  DEFAULT_NOTIFY,
+  EMAIL_TOKEN_TTL_MS,
+  RESET_TOKEN_TTL_MS,
+  isCategoryScopedRole,
+  isStaffRole,
+  normalizeNotify,
+} from '../../shared/constants.js';
+import {
+  validateAdminInput,
+  validateContractorInput,
+  validatePasswordChange,
+  validatePasswordReset,
+} from '../../shared/validation.js';
 
 const VERIFY_PURPOSE = 'verify_email';
+const RESET_PURPOSE = 'reset_password';
 
 const withErrors = (message, errors) => {
   const error = badRequest(message);
@@ -63,8 +84,8 @@ export function registerContractor(input) {
 
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, company_name, full_name,
-                        password_salt, password_hash, is_email_verified, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 'self')`,
+                        password_salt, password_hash, is_email_verified, notify, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'self')`,
     [
       id,
       ROLE.CONTRACTOR,
@@ -75,6 +96,7 @@ export function registerContractor(input) {
       fullName,
       salt,
       hashPassword(input.password, salt),
+      JSON.stringify(DEFAULT_NOTIFY),
       Date.now(),
     ],
   );
@@ -83,7 +105,7 @@ export function registerContractor(input) {
   return findUser(id);
 }
 
-/* ------------------------ учетные записи администраторов ---------------------- */
+/* --------------------------- учетные записи сотрудников ----------------------- */
 
 export function listUsers() {
   return sql
@@ -95,20 +117,43 @@ export function listUsers() {
       displayName: user.displayName,
       login: user.login,
       email: user.email,
+      isEmailVerified: user.isEmailVerified,
       createdAt: user.createdAt,
-      ...(isAdminRole(user.role)
-        ? { isEmailVerified: user.isEmailVerified, categories: user.categories }
+      ...(isStaffRole(user.role)
+        ? { categories: user.categories }
         : { companyName: user.companyName, fullName: user.fullName }),
     }));
 }
 
-/** Создание администратора. Доступно только главному администратору. */
+/**
+ * Кого можно назначить на сигнал. Руководители идут вместе с курируемыми
+ * категориями: окно распределения подсказывает «свой» список, но выбрать
+ * разрешает кого угодно, в том числе из других категорий.
+ */
+export function listAssignables() {
+  return sql
+    .all(`SELECT * FROM users WHERE role IN (?, ?, ?) ORDER BY role, display_name`, [
+      ROLE.MANAGER,
+      ROLE.ADMIN,
+      ROLE.SUPERADMIN,
+    ])
+    .map(toUser)
+    .map((user) => ({
+      id: user.id,
+      role: user.role,
+      displayName: user.displayName,
+      categories: user.categories ?? [],
+    }));
+}
+
+/** Создание учетной записи сотрудника. Доступно только главному администратору. */
 export async function createAdmin(input, actor) {
   if (actor?.role !== ROLE.SUPERADMIN) {
     throw forbidden('Создавать учетные записи может только главный администратор');
   }
 
-  const { valid, errors } = validateAdminInput(input);
+  const role = ACCOUNT_TYPE_IDS.includes(input?.role) ? input.role : ROLE.ADMIN;
+  const { valid, errors } = validateAdminInput({ ...input, role });
   if (!valid) throw withErrors('Форма заполнена не полностью', errors);
 
   const login = String(input.login).trim();
@@ -119,26 +164,30 @@ export async function createAdmin(input, actor) {
 
   const salt = randomSalt();
   const id = uid('adm');
+  // Главному администратору доступны все категории, набор для него не хранится.
+  const categories = isCategoryScopedRole(role) ? normalizeCategories(input.categories) : [];
 
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, password_salt, password_hash,
-                        is_email_verified, categories, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+                        is_email_verified, categories, notify, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
     [
       id,
-      ROLE.ADMIN,
+      role,
       String(input.displayName).trim(),
       login,
       email,
       salt,
       hashPassword(input.password, salt),
-      JSON.stringify(normalizeCategories(input.categories)),
+      JSON.stringify(categories),
+      JSON.stringify(DEFAULT_NOTIFY),
       Date.now(),
       actor.id,
     ],
   );
 
-  // Учетная запись уже создана: сбой доставки письма не должен ее откатывать.
+  // Учетная запись работает сразу: письмо подтверждения информационное,
+  // и сбой доставки не должен откатывать создание.
   let delivery;
   try {
     delivery = await issueVerification(id);
@@ -151,7 +200,7 @@ export async function createAdmin(input, actor) {
   return { admin: findUser(id), delivery };
 }
 
-/** Смена набора видимых категорий. Только главный администратор. */
+/** Смена набора категорий. Только главный администратор. */
 export function updateCategories(userId, categories, actor) {
   if (actor?.role !== ROLE.SUPERADMIN) {
     throw forbidden('Менять доступ к категориям может только главный администратор');
@@ -159,7 +208,9 @@ export function updateCategories(userId, categories, actor) {
 
   const user = findUser(userId);
   if (!user) throw notFound('Учетная запись не найдена');
-  if (user.role !== ROLE.ADMIN) throw badRequest('Категории настраиваются только у администраторов');
+  if (!isCategoryScopedRole(user.role)) {
+    throw badRequest('Категории настраиваются у администраторов и руководителей');
+  }
 
   const next = normalizeCategories(categories);
   sql.run(`UPDATE users SET categories = ? WHERE id = ?`, [JSON.stringify(next), userId]);
@@ -168,28 +219,108 @@ export function updateCategories(userId, categories, actor) {
   return findUser(userId);
 }
 
+/**
+ * Удаление учетной записи. Только главный администратор, и только чужой:
+ * запретить себе вход одним кликом — не то, чего от кнопки ждут.
+ * Последнего главного администратора система тоже не отдает — иначе
+ * управлять учетными записями станет некому.
+ */
+export function deleteUser(userId, actor) {
+  if (actor?.role !== ROLE.SUPERADMIN) {
+    throw forbidden('Удалять учетные записи может только главный администратор');
+  }
+
+  const user = findUser(userId);
+  if (!user) throw notFound('Учетная запись не найдена');
+  if (user.id === actor.id) throw badRequest('Нельзя удалить собственную учетную запись');
+
+  if (user.role === ROLE.SUPERADMIN) {
+    const { n } = sql.get(`SELECT COUNT(*) AS n FROM users WHERE role = ?`, [ROLE.SUPERADMIN]);
+    if (n <= 1) throw badRequest('Это последний главный администратор — удалить его нельзя');
+  }
+
+  sql.transaction(() => {
+    // Сигналы остаются: они исторический документ. Убираем только следы
+    // участия — сессии и токены уходят каскадом по внешнему ключу.
+    sql.run(`DELETE FROM assignments WHERE user_id = ?`, [userId]);
+    sql.run(`DELETE FROM signal_views WHERE user_id = ?`, [userId]);
+    sql.run(`DELETE FROM users WHERE id = ?`, [userId]);
+  });
+
+  publish('user', { id: userId, deleted: true });
+  return { id: userId, displayName: user.displayName };
+}
+
+/* ------------------------------ личные настройки ------------------------------ */
+
+/** Смена пароля из раздела «Аккаунт»: сначала подтверждаем текущий. */
+export function changePassword(userId, input) {
+  const { valid, errors } = validatePasswordChange(input);
+  if (!valid) throw withErrors('Проверьте поля формы', errors);
+
+  const row = sql.get(`SELECT * FROM users WHERE id = ?`, [userId]);
+  if (!row) throw notFound('Учетная запись не найдена');
+
+  if (!verifyPassword(input.currentPassword, row.password_salt, row.password_hash)) {
+    throw withErrors('Текущий пароль указан неверно', { currentPassword: 'Неверный пароль' });
+  }
+
+  applyPassword(userId, input.password);
+  return findUser(userId);
+}
+
+/** Общая часть смены пароля: новая соль плюс сброс всех активных сессий. */
+function applyPassword(userId, password) {
+  const salt = randomSalt();
+  sql.transaction(() => {
+    sql.run(`UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?`, [
+      salt,
+      hashPassword(password, salt),
+      userId,
+    ]);
+    // Пароль сменился — прежние сессии больше не действуют.
+    sql.run(`DELETE FROM sessions WHERE user_id = ?`, [userId]);
+  });
+}
+
+/** Подписки на почтовые уведомления. Каждый настраивает только себя. */
+export function updateNotify(userId, notify) {
+  const user = findUser(userId);
+  if (!user) throw notFound('Учетная запись не найдена');
+
+  const next = normalizeNotify(notify);
+  sql.run(`UPDATE users SET notify = ? WHERE id = ?`, [JSON.stringify(next), userId]);
+
+  publish('user', { id: userId, notify: next.enabled });
+  return findUser(userId);
+}
+
 /* ------------------------------- верификация --------------------------------- */
 
-/** Выпускает одноразовый токен с TTL и отправляет письмо со ссылкой. */
-export async function issueVerification(userId) {
-  const user = findUser(userId);
-  if (!user || !isAdminRole(user.role)) throw notFound('Учетная запись не найдена');
-  if (user.isEmailVerified) throw badRequest('Почта уже подтверждена');
-
+function issueToken(userId, purpose, ttlMs) {
   // Ранее выпущенные ссылки перестают работать: активный токен всегда один.
-  sql.run(`DELETE FROM email_tokens WHERE user_id = ? AND purpose = ? AND used_at IS NULL`, [userId, VERIFY_PURPOSE]);
+  sql.run(`DELETE FROM email_tokens WHERE user_id = ? AND purpose = ? AND used_at IS NULL`, [userId, purpose]);
 
   const token = randomToken();
   const now = Date.now();
   sql.run(`INSERT INTO email_tokens (token, user_id, purpose, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`, [
     token,
     userId,
-    VERIFY_PURPOSE,
+    purpose,
     now,
-    now + EMAIL_TOKEN_TTL_MS,
+    now + ttlMs,
   ]);
+  return token;
+}
 
-  return sendVerificationEmail(user, token);
+/** Выпускает одноразовый токен с TTL и отправляет письмо со ссылкой. */
+export async function issueVerification(userId) {
+  const user = findUser(userId);
+  if (!user) throw notFound('Учетная запись не найдена');
+  if (user.isEmailVerified) throw badRequest('Почта уже подтверждена');
+  if (!user.email) throw badRequest('У учетной записи не указан email');
+
+  return sendVerificationEmail(user, issueToken(userId, VERIFY_PURPOSE, EMAIL_TOKEN_TTL_MS));
 }
 
 export function verifyEmailToken(token) {
@@ -210,6 +341,56 @@ export function verifyEmailToken(token) {
 
   publish('user', { id: user.id, verified: true });
   return { ok: true, user: findUser(user.id) };
+}
+
+/* --------------------------- восстановление пароля ---------------------------- */
+
+/**
+ * Запрос ссылки восстановления по логину или почте.
+ *
+ * Ответ всегда одинаковый: существование учетной записи через эту форму
+ * узнать нельзя. Отсюда `{ ok: true }` даже когда отправлять некому.
+ */
+export async function requestPasswordReset(identifier) {
+  const raw = String(identifier ?? '').trim();
+  if (!raw) throw withErrors('Укажите логин или email', { identifier: 'Укажите логин или email' });
+
+  const row = findByLogin(raw) ?? findByEmail(raw);
+  const user = toUser(row);
+  if (!user?.email) return { ok: true, sent: false };
+
+  const delivery = await sendPasswordResetEmail(user, issueToken(user.id, RESET_PURPOSE, RESET_TOKEN_TTL_MS));
+  return { ok: true, sent: true, delivery };
+}
+
+/** Проверка ссылки до показа формы — чтобы не вводить пароль впустую. */
+export function checkResetToken(token) {
+  const row = sql.get(`SELECT * FROM email_tokens WHERE token = ?`, [String(token ?? '')]);
+  if (!row || row.purpose !== RESET_PURPOSE) return { ok: false, reason: 'Ссылка недействительна' };
+  if (row.used_at) return { ok: false, reason: 'Ссылка уже была использована' };
+  if (row.expires_at < Date.now()) return { ok: false, reason: 'Срок действия ссылки истек' };
+
+  const user = findUser(row.user_id);
+  if (!user) return { ok: false, reason: 'Учетная запись не найдена' };
+  return { ok: true, login: user.login };
+}
+
+export function resetPassword(token, input) {
+  const check = checkResetToken(token);
+  if (!check.ok) throw badRequest(check.reason);
+
+  const { valid, errors } = validatePasswordReset(input);
+  if (!valid) throw withErrors('Проверьте поля формы', errors);
+
+  const row = sql.get(`SELECT * FROM email_tokens WHERE token = ?`, [String(token)]);
+  applyPassword(row.user_id, input.password);
+  sql.run(`UPDATE email_tokens SET used_at = ? WHERE token = ?`, [Date.now(), row.token]);
+
+  // Раз человек прочитал письмо на этом адресе — почта заодно подтверждена.
+  sql.run(`UPDATE users SET is_email_verified = 1 WHERE id = ?`, [row.user_id]);
+
+  publish('user', { id: row.user_id, passwordReset: true });
+  return findUser(row.user_id);
 }
 
 /** Жива ли еще учетная запись по умолчанию — для демо-подсказки на форме входа. */

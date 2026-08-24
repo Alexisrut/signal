@@ -9,7 +9,7 @@ import { sql } from './db.js';
 import { randomToken } from './crypto.js';
 import { parseCookies, appendCookie, clearCookie } from './http.js';
 import { SESSION_TTL_MS } from './config.js';
-import { ROLE, isAdminRole, CATEGORY_IDS } from '../shared/constants.js';
+import { ROLE, isAdminRole, isStaffRole, CATEGORY_IDS, normalizeNotify } from '../shared/constants.js';
 
 const SESSION_COOKIE = 'sms_session';
 
@@ -33,6 +33,9 @@ export function toUser(row) {
     login: row.login,
     email: row.email,
     createdAt: row.created_at,
+    isEmailVerified: Boolean(row.is_email_verified),
+    // Подписки на письма есть у всех ролей; у подрядчика используется только тумблер.
+    notify: normalizeNotify(safeParse(row.notify, null)),
   };
 
   if (row.role === ROLE.CONTRACTOR) {
@@ -40,8 +43,7 @@ export function toUser(row) {
     user.fullName = row.full_name;
   }
 
-  if (isAdminRole(row.role)) {
-    user.isEmailVerified = Boolean(row.is_email_verified);
+  if (isStaffRole(row.role)) {
     // Главный администратор видит все категории независимо от списка.
     user.categories =
       row.role === ROLE.SUPERADMIN ? [...CATEGORY_IDS] : safeParse(row.categories, []).filter((id) => CATEGORY_IDS.includes(id));
@@ -104,5 +106,8 @@ export const isAdmin = (actor) => isAdminRole(actor?.role);
 export const isSuperadmin = (actor) => actor?.role === ROLE.SUPERADMIN;
 export const isContractor = (actor) => actor?.role === ROLE.CONTRACTOR;
 
-/** Полноправный администратор — вошедший И подтвердивший почту. */
-export const isVerifiedAdmin = (actor) => isAdmin(actor) && actor.isEmailVerified === true;
+/**
+ * Сотрудник платформы: администратор, главный администратор или руководитель.
+ * Подтверждение почты доступ больше не ограничивает — оно необязательное.
+ */
+export const isStaff = (actor) => isStaffRole(actor?.role);

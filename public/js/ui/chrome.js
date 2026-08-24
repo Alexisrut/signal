@@ -1,18 +1,10 @@
 /** Шапка приложения, глобальные баннеры и всплывающие уведомления. */
 
 import { html } from '../core/utils.js';
-import { ROLE_LABEL, STATUS } from '/shared/constants.js';
+import { ROLE_LABEL, STATUS, THEME } from '/shared/constants.js';
+import { currentTheme, onThemeChange, toggleTheme } from '../core/theme.js';
 import * as store from '../data/store.js';
-import {
-  currentActor,
-  isAdmin,
-  isAuthenticated,
-  isContractor,
-  isSuperadmin,
-  isVerifiedAdmin,
-  isPendingVerification,
-  logout,
-} from '../domain/session.js';
+import { currentActor, isAdmin, isAuthenticated, isContractor, isStaff, isSuperadmin, logout } from '../domain/session.js';
 import { listMine, listAll, listUndistributed } from '../domain/signals.js';
 import { navigate } from './router.js';
 
@@ -82,19 +74,40 @@ function bindMenu(host) {
   applyMenuState();
 }
 
+/** Переключатель темы доступен всем, включая гостя на форме входа. */
+function themeButton() {
+  const dark = currentTheme() === THEME.DARK;
+  const label = dark ? 'Включить светлую тему' : 'Включить темную тему';
+  return html`<button class="theme-toggle" type="button" data-action="theme" title="${label}" aria-label="${label}">
+    ${dark ? '☀' : '☾'}
+  </button>`;
+}
+
+/**
+ * Последний отрисованный маршрут. Тему можно переключить и из раздела «Аккаунт» —
+ * кнопка в шапке должна поменять подпись, не дожидаясь смены экрана.
+ */
+let lastPath = '/';
+onThemeChange(() => {
+  if (document.getElementById('topbar')) renderHeader(lastPath);
+});
+
 export function renderHeader(currentPath = '/') {
+  lastPath = currentPath;
   const host = document.getElementById('topbar');
   const actor = currentActor();
   const state = store.getState();
 
-  const links = [navLink('#/', 'Главная', currentPath)];
+  // «Аккаунт» стоит первым пунктом — левее «Главной».
+  const links = isAuthenticated(actor) ? [navLink('#/account', 'Аккаунт', currentPath)] : [];
+  links.push(navLink('#/', 'Главная', currentPath));
 
   if (isContractor(actor)) {
     const activeMine = listMine().filter(isActiveStatus).length;
     links.push(navLink('#/my', 'Мои сигналы', currentPath, activeMine || ''));
   }
 
-  if (isVerifiedAdmin(actor)) {
+  if (isStaff(actor)) {
     const activeAll = (listAll() ?? []).filter(isActiveStatus).length;
     links.push(navLink('#/admin', 'Дашборд', currentPath, activeAll || ''));
 
@@ -123,6 +136,7 @@ export function renderHeader(currentPath = '/') {
 
       <div class="topbar__side">
         ${[state.offline ? html`<span class="conn conn--offline" title="Нет связи с сервером">офлайн</span>` : '']}
+        ${[themeButton()]}
         ${[
           isAuthenticated(actor)
             ? html`<span class="who who--${actor.role}">
@@ -135,22 +149,17 @@ export function renderHeader(currentPath = '/') {
         ]}
       </div>
     </div>
-    ${[
-      isPendingVerification(actor)
-        ? html`<div class="banner banner--warn">
-            Почта <b>${actor.email}</b> не подтверждена — панель управления заблокирована.
-            <a class="link" href="#/admin/verify">Что делать</a>
-          </div>`
-        : '',
-    ]}
   `;
 
   bindMenu(host);
 
+  // Перерисовку шапки после переключения запускает подписка onThemeChange выше.
+  host.querySelector('[data-action="theme"]')?.addEventListener('click', () => toggleTheme());
+
   host.querySelector('[data-action="logout"]')?.addEventListener('click', async () => {
-    const wasAdmin = isAdmin();
+    const wasStaff = isAdmin() || isStaff();
     await logout();
-    showToast(wasAdmin ? 'Вы вышли из аккаунта администратора' : 'Вы вышли из системы');
+    showToast(wasStaff ? 'Вы вышли из рабочего аккаунта' : 'Вы вышли из системы');
     navigate('/login');
   });
 }

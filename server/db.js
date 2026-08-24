@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import sqlite from 'node-sqlite3-wasm';
 
 import { DATA_DIR, UPLOADS_DIR, MAILBOX_DIR, DB_PATH } from './config.js';
-import { DEFAULT_ADMIN, ROLE } from '../shared/constants.js';
+import { DEFAULT_ADMIN, DEFAULT_NOTIFY, ROLE, STATUS } from '../shared/constants.js';
 import { hashPassword, randomSalt, uid } from './crypto.js';
 
 const { Database } = sqlite;
@@ -58,6 +58,7 @@ sql.exec(`
     password_hash     TEXT,
     is_email_verified INTEGER NOT NULL DEFAULT 0,
     categories        TEXT,
+    notify            TEXT,
     created_at        INTEGER NOT NULL,
     created_by        TEXT
   );
@@ -72,6 +73,9 @@ sql.exec(`
     description     TEXT NOT NULL,
     status          TEXT NOT NULL,
     distributed_at  INTEGER,
+    closed_at       INTEGER,
+    paused_ms       INTEGER NOT NULL DEFAULT 0,
+    assignment_note TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   );
@@ -128,6 +132,20 @@ sql.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_assignments_entity ON assignments(entity_type, entity_id, assigned_at);
 
+  /*
+   * Отметки просмотра карточек. Индикатор «сколько изменений с прошлого захода»
+   * считается сравнением истории сигнала с этой меткой, поэтому она нужна
+   * на пару «пользователь + сигнал», а не на сигнал целиком.
+   */
+  CREATE TABLE IF NOT EXISTS signal_views (
+    user_id   TEXT NOT NULL,
+    signal_id TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
+    seen_at   INTEGER NOT NULL,
+    PRIMARY KEY (user_id, signal_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_views_user ON signal_views(user_id);
+
   CREATE TABLE IF NOT EXISTS email_tokens (
     token      TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -182,12 +200,25 @@ function migrate() {
     ['company_name', 'TEXT'],
     ['full_name', 'TEXT'],
     ['categories', 'TEXT'],
+    ['notify', 'TEXT'],
   ]) {
     addColumn('users', column, definition);
   }
 
   addColumn('signals', 'distributed_at', 'INTEGER');
   addColumn('signals', 'category', 'TEXT');
+  addColumn('signals', 'assignment_note', 'TEXT');
+
+  // Пауза и момент закрытия появились вместе с возобновлением сигналов.
+  // На старой базе закрытым сигналам проставляем время последнего изменения:
+  // другого следа о моменте закрытия там нет.
+  if (addColumn('signals', 'closed_at', 'INTEGER')) {
+    sql.run(`UPDATE signals SET closed_at = updated_at WHERE status IN (?, ?) AND closed_at IS NULL`, [
+      STATUS.GREEN,
+      STATUS.GRAY,
+    ]);
+  }
+  addColumn('signals', 'paused_ms', 'INTEGER NOT NULL DEFAULT 0');
 
   // Линии превратились в категории: старые значения переносим по смыслу,
   // а сигналы без линии остаются нераспределенными.
@@ -236,8 +267,8 @@ export function seedDefaultAdmin() {
 
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, password_salt, password_hash,
-                        is_email_verified, categories, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'system')`,
+                        is_email_verified, categories, notify, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'system')`,
     [
       admin.id,
       ROLE.SUPERADMIN,
@@ -247,6 +278,7 @@ export function seedDefaultAdmin() {
       salt,
       hashPassword(DEFAULT_ADMIN.password, salt),
       JSON.stringify([]),
+      JSON.stringify(DEFAULT_NOTIFY),
       Date.now(),
     ],
   );

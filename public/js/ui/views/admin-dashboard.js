@@ -1,20 +1,27 @@
 /**
  * Дашборд администратора — «карта сигналов»: сигналы, сгруппированные по категориям,
- * с фильтрами по категории, статусу и принятию в работу и экспортом в Excel.
+ * с фильтрами по категории и статусу и экспортом в Excel.
  *
  * Колонки строятся только из тех категорий, которые открыты текущему
- * администратору: главный видит все, остальные — выданный им набор.
+ * сотруднику: главный администратор видит все, остальные — закрепленный набор.
  * Состояние фильтров живет в query-строке: оно переживает live-перерисовку
  * и теми же параметрами уходит в серверный отчет.
  */
 
 import { html } from '../../core/utils.js';
-import { ASSIGNMENT, ASSIGNMENT_FILTERS, CATEGORIES, STATUS_META, STATUS_ORDER } from '/shared/constants.js';
-import { isActive } from '/shared/state-machine.js';
-import { currentActor, isSuperadmin, myCategories } from '../../domain/session.js';
-import { listAll, listUndistributed, filterSignals, countByStatus } from '../../domain/signals.js';
+import { ASSIGNMENT, CATEGORIES, STATUS_META, STATUS_ORDER, categoryLabel } from '/shared/constants.js';
+import { isActive, isAssignedTo } from '/shared/state-machine.js';
+import { currentActor, isAdmin, isSuperadmin, myCategories } from '../../domain/session.js';
+import {
+  listAll,
+  listUndistributed,
+  filterSignals,
+  countByStatus,
+  resolutionStats,
+  unreadCount,
+} from '../../domain/signals.js';
 import { downloadReport } from '../../domain/reports.js';
-import { signalCard, statCounters, statusLegend, emptyState } from '../components.js';
+import { signalCard, statCounters, statusLegend, emptyState, formatAverage } from '../components.js';
 import { showToast } from '../chrome.js';
 
 const STATUS_FILTERS = [
@@ -29,6 +36,44 @@ function chipLink(filter, current, buildHref) {
   return html`<a class="chip ${active} ${tone}" href="${buildHref(filter.id)}">${filter.label}</a>`;
 }
 
+/**
+ * Свернутая строка со средним временем решения по всей платформе; развернутая
+ * показывает разбивку по категориям. Состояние живет в query-строке — иначе
+ * live-перерисовка схлопывала бы строку обратно на каждое событие с сервера.
+ */
+function resolutionPanel(stats, { open, href }) {
+  if (!stats) return '';
+
+  const rows = stats.byCategory.map(
+    (row) => html`<li class="resolution__row">
+      <span class="resolution__name">
+        <span class="status-card__dot status-card__dot--${row.id}"></span>${categoryLabel(row.id)}
+      </span>
+      <span class="resolution__count">${row.resolved} решено</span>
+      <span class="resolution__time">${formatAverage(row.avgMs)}</span>
+    </li>`,
+  );
+
+  return html`<section class="resolution ${open ? 'is-open' : ''}">
+    <a class="resolution__head" href="${href}" aria-expanded="${open ? 'true' : 'false'}">
+      <span class="resolution__chevron" aria-hidden="true">▸</span>
+      <span class="resolution__label">Среднее время решения по платформе</span>
+      <strong class="resolution__value">${formatAverage(stats.overall.avgMs)}</strong>
+      <span class="resolution__count">решено задач: ${stats.overall.resolved}</span>
+    </a>
+    ${[
+      open
+        ? html`<div class="resolution__body">
+            <div class="resolution__legend">
+              <span>Категория</span><span>Решено задач</span><span>Среднее время решения</span>
+            </div>
+            <ul class="resolution__list">${rows}</ul>
+          </div>`
+        : '',
+    ]}
+  </section>`;
+}
+
 export const adminDashboardView = {
   live: true,
 
@@ -38,18 +83,30 @@ export const adminDashboardView = {
 
     const category = ctx.query.category ?? 'all';
     const status = ctx.query.status ?? 'all';
-    const assignment = ctx.query.assignment ?? ASSIGNMENT.ALL;
+    const statsOpen = ctx.query.stats === 'open';
     const now = Date.now();
 
     const all = listAll() ?? [];
-    const visible = filterSignals(all, { category, status, assignment });
+    const visible = filterSignals(all, { category, status });
     const counters = countByStatus(all);
     const waiting = (listUndistributed() ?? []).length;
+
+    /**
+     * Индикатор новых изменений видят администраторы — по всем своим карточкам,
+     * и руководители — только по тем задачам, за которые они отвечают.
+     */
+    const showsUnread = (signal) => isAdmin(actor) || isAssignedTo(signal, actor.id);
 
     const columns = (category === 'all' ? allowed : allowed.filter((item) => item.id === category)).map((column) => {
       const items = visible.filter((signal) => signal.category === column.id);
       const active = items.filter((signal) => isActive(signal.status)).length;
-      const cards = items.map((signal) => signalCard(signal, { href: `#/admin/signal/${signal.id}`, now }));
+      const cards = items.map((signal) =>
+        signalCard(signal, {
+          href: `#/admin/signal/${signal.id}`,
+          now,
+          unread: showsUnread(signal) ? unreadCount(signal.id) : 0,
+        }),
+      );
 
       return html`<section class="column">
         <header class="column__head">
@@ -62,8 +119,8 @@ export const adminDashboardView = {
       </section>`;
     });
 
-    const href = (nextCategory, nextStatus, nextAssignment = assignment) =>
-      `#/admin?category=${nextCategory}&status=${nextStatus}&assignment=${nextAssignment}`;
+    const href = (nextCategory, nextStatus, nextStats = statsOpen) =>
+      `#/admin?category=${nextCategory}&status=${nextStatus}${nextStats ? '&stats=open' : ''}`;
 
     const categoryFilters = [{ id: 'all', label: 'Все категории' }, ...allowed];
 
@@ -109,6 +166,8 @@ export const adminDashboardView = {
 
         ${[statCounters(counters)]}
 
+        ${[resolutionPanel(resolutionStats(), { open: statsOpen, href: href(category, status, !statsOpen) })]}
+
         <div class="filters">
           <div class="filters__group">
             <span class="filters__label">Категория</span>
@@ -119,12 +178,6 @@ export const adminDashboardView = {
           <div class="filters__group">
             <span class="filters__label">Статус</span>
             <div class="chips">${STATUS_FILTERS.map((filter) => chipLink(filter, status, (id) => href(category, id)))}</div>
-          </div>
-          <div class="filters__group">
-            <span class="filters__label">В работе</span>
-            <div class="chips">
-              ${ASSIGNMENT_FILTERS.map((filter) => chipLink(filter, assignment, (id) => href(category, status, id)))}
-            </div>
           </div>
         </div>
 
@@ -149,7 +202,7 @@ export const adminDashboardView = {
         const { filename, rows } = await downloadReport('signals', {
           category: ctx.query.category ?? 'all',
           status: ctx.query.status ?? 'all',
-          assignment: ctx.query.assignment ?? ASSIGNMENT.ALL,
+          assignment: ASSIGNMENT.ALL,
         });
         showToast(`Отчет ${filename} сформирован (${rows} строк)`, 'success');
       } catch (error) {

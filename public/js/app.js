@@ -5,15 +5,8 @@
 
 import * as store from './data/store.js';
 import { UI_TICK_MS } from '/shared/constants.js';
-import {
-  isAuthenticated,
-  isContractor,
-  isSuperadmin,
-  isVerifiedAdmin,
-  isAdmin,
-  isPendingVerification,
-  currentActor,
-} from './domain/session.js';
+import { isAuthenticated, isContractor, isStaff, isSuperadmin, currentActor } from './domain/session.js';
+import { applyTheme } from './core/theme.js';
 
 import { createRouter } from './ui/router.js';
 import { renderHeader } from './ui/chrome.js';
@@ -29,7 +22,8 @@ import { adminDashboardView } from './ui/views/admin-dashboard.js';
 import { distributionView } from './ui/views/distribution.js';
 import { adminSignalView } from './ui/views/admin-signal.js';
 import { adminUsersView } from './ui/views/admin-users.js';
-import { verifyPendingView } from './ui/views/verify-pending.js';
+import { accountView } from './ui/views/account.js';
+import { forgotView, resetView } from './ui/views/password.js';
 import { editSignalView } from './ui/views/edit-signal.js';
 
 /** Любой раздел, кроме входа и регистрации, требует учетной записи. */
@@ -44,16 +38,18 @@ function requireContractor() {
   return isContractor() ? null : '/admin';
 }
 
-/** Панель доступна только администратору с подтвержденной почтой. */
-function requireAdmin() {
-  if (isVerifiedAdmin()) return null;
-  if (isPendingVerification()) return '/admin/verify';
+/**
+ * Панель доступна администраторам и руководителям.
+ * Подтверждение почты доступ не ограничивает — оно необязательное.
+ */
+function requireStaff() {
+  if (isStaff()) return null;
   return isAuthenticated() ? '/' : '/login';
 }
 
 /** Распределение и учетные записи — зона главного администратора. */
 function requireSuperadmin() {
-  const redirect = requireAdmin();
+  const redirect = requireStaff();
   if (redirect) return redirect;
   return isSuperadmin() ? null : '/admin';
 }
@@ -71,21 +67,28 @@ const routes = [
     view: registerView,
     guard: () => (isAuthenticated() ? landingFor(currentActor()) : null),
   },
+  {
+    path: '/forgot',
+    view: forgotView,
+    guard: () => (isAuthenticated() ? '/account' : null),
+  },
+  // Ссылка из письма ведет сюда даже для вошедшего: он мог открыть ее,
+  // чтобы сменить пароль после потери доступа с другого устройства.
+  { path: '/reset', view: resetView },
+
+  { path: '/account', view: accountView, guard: requireAuth },
 
   { path: '/new', view: newSignalView, guard: requireContractor },
   { path: '/my', view: mySignalsView, guard: requireContractor },
   { path: '/my/:id', view: mySignalView, guard: requireContractor },
   { path: '/my/:id/edit', view: editSignalView, guard: requireContractor },
 
-  {
-    path: '/admin/verify',
-    view: verifyPendingView,
-    guard: () => (isAdmin() ? (isVerifiedAdmin() ? '/admin' : null) : '/login'),
-  },
-  { path: '/admin', view: adminDashboardView, guard: requireAdmin },
+  // Старый адрес экрана подтверждения: почта теперь настраивается в «Аккаунте».
+  { path: '/admin/verify', view: accountView, guard: () => requireAuth() ?? '/account' },
+  { path: '/admin', view: adminDashboardView, guard: requireStaff },
   { path: '/admin/distribution', view: distributionView, guard: requireSuperadmin },
-  { path: '/admin/signal/:id', view: adminSignalView, guard: requireAdmin },
-  { path: '/admin/signal/:id/edit', view: editSignalView, guard: requireAdmin },
+  { path: '/admin/signal/:id', view: adminSignalView, guard: requireStaff },
+  { path: '/admin/signal/:id/edit', view: editSignalView, guard: requireStaff },
   { path: '/admin/users', view: adminUsersView, guard: requireSuperadmin },
 ];
 
@@ -107,6 +110,10 @@ const notFoundView = {
 async function bootstrap() {
   const root = document.getElementById('app');
   root.innerHTML = '<div class="loader">Загрузка данных…</div>';
+
+  // Атрибут темы уже стоит из инлайн-скрипта в index.html; здесь он лишь
+  // подтверждается — чтобы приложение и хранилище точно не разошлись.
+  applyTheme();
 
   await store.init();
 

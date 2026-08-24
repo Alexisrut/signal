@@ -9,7 +9,7 @@ import { html } from '../../core/utils.js';
 import { categoryLabel } from '/shared/constants.js';
 import { validateSignalInput } from '/shared/validation.js';
 import { canEdit } from '/shared/state-machine.js';
-import { currentActor, isVerifiedAdmin } from '../../domain/session.js';
+import { currentActor, isStaff } from '../../domain/session.js';
 import { findAny, updateSignal } from '../../domain/signals.js';
 import { emptyState, statusBadge } from '../components.js';
 import { navigate } from '../router.js';
@@ -70,7 +70,7 @@ export const editSignalView = {
         <h1 class="wizard__title">Редактирование сигнала</h1>
         <p class="wizard__lead">
           ${[statusBadge(signal.status)]} · категория: <strong>${categoryLabel(signal.category)}</strong>
-          ${[isVerifiedAdmin(actor) ? html` · правка будет записана в историю от вашего имени` : '']}
+          ${[isStaff(actor) ? html` · правка будет записана в историю от вашего имени` : '']}
         </p>
 
         <form class="form" id="edit-signal-form" novalidate>

@@ -34,16 +34,25 @@ const routes = [
   ['GET', '/api/signals/:id', api.getSignal],
   ['PUT', '/api/signals/:id', api.updateSignal],
   ['POST', '/api/signals/:id/status', api.changeSignalStatus],
+  ['POST', '/api/signals/:id/reopen', api.reopenSignal],
   ['POST', '/api/signals/:id/assign', api.assignSignal],
+  ['POST', '/api/signals/:id/assignees', api.assignPeople],
+  ['POST', '/api/signals/:id/seen', api.seenSignal],
   ['POST', '/api/signals/:id/age', api.ageSignal],
   ['POST', '/api/signals/:id/category', api.distributeSignal],
 
   ['POST', '/api/auth/login', api.login],
   ['POST', '/api/auth/logout', api.logout],
   ['POST', '/api/auth/register', api.register],
+  ['POST', '/api/auth/forgot', api.forgotPassword],
+  ['GET', '/api/auth/reset', api.checkResetToken],
+  ['POST', '/api/auth/reset', api.resetPassword],
+  ['POST', '/api/auth/password', api.changePassword],
 
   ['POST', '/api/admins', api.createAdmin],
   ['PUT', '/api/users/:id/categories', api.updateUserCategories],
+  ['DELETE', '/api/users/:id', api.deleteUser],
+  ['PUT', '/api/notifications', api.updateNotify],
   ['POST', '/api/verification/resend', api.resendVerification],
 
   ['POST', '/api/files', files.uploadFiles],
@@ -52,9 +61,18 @@ const routes = [
   ['GET', '/api/export/signals', exportRoutes.exportSignals],
 
   ['GET', '/verify', verifyEmail],
+  // Ссылка из письма ведет на обычный маршрут приложения: форму нового пароля
+  // рисует SPA, серверу остается только перебросить токен в хеш.
+  ['GET', '/reset', resetRedirect],
   ['GET', '/dev/mailbox', mailboxIndex],
   ['GET', '/dev/mailbox/:id', mailboxItem],
 ];
+
+function resetRedirect(req, res, { url }) {
+  const token = url.searchParams.get('token') ?? '';
+  res.writeHead(302, { Location: `/#/reset?token=${encodeURIComponent(token)}`, 'Cache-Control': 'no-store' });
+  res.end();
+}
 
 function matchRoute(method, pathname) {
   const segments = pathname.split('/').filter(Boolean);

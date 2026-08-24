@@ -6,7 +6,7 @@
  */
 
 import { html, isBlank } from '../../core/utils.js';
-import { DEFAULT_ADMIN, ROLE, isAdminRole } from '/shared/constants.js';
+import { DEFAULT_ADMIN, ROLE, isStaffRole } from '/shared/constants.js';
 import * as store from '../../data/store.js';
 import { login } from '../../domain/session.js';
 import { navigate } from '../router.js';
@@ -15,7 +15,8 @@ import { showToast } from '../chrome.js';
 /** Куда вести после успешного входа. */
 export function landingFor(user) {
   if (user.role === ROLE.CONTRACTOR) return '/my';
-  if (isAdminRole(user.role)) return user.isEmailVerified ? '/admin' : '/admin/verify';
+  // Подтверждение почты доступ не ограничивает — сотрудник сразу попадает на дашборд.
+  if (isStaffRole(user.role)) return '/admin';
   return '/';
 }
 
@@ -53,6 +54,8 @@ export const loginView = {
             <a class="btn btn--ghost" href="#/register">Зарегистрировать компанию</a>
             <button class="btn btn--primary" type="submit">Войти</button>
           </div>
+
+          <p class="auth__aside"><a class="link" href="#/forgot">Забыли пароль?</a></p>
         </form>
 
         ${[

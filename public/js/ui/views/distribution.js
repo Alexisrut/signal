@@ -2,14 +2,24 @@
  * Раздел «Распределение» — видит только главный администратор.
  *
  * Сюда попадает каждый новый сигнал и остается здесь, пока ему не назначена
- * категория. После распределения сигнал уходит на дашборд к тем администраторам,
- * которым эта категория открыта.
+ * категория. Выбор категории открывает окно, где задачу сразу выдают одному
+ * или нескольким руководителям — в том числе курирующим другие категории —
+ * и прикладывают заметку для ответственных.
  */
 
 import { html, formatDateTime, truncate } from '../../core/utils.js';
-import { CATEGORIES } from '/shared/constants.js';
+import { CATEGORIES, categoryLabel } from '/shared/constants.js';
 import { listUndistributed, authorLabel, distribute } from '../../domain/signals.js';
-import { statusBadge, emptyState, escalationHint, ageLabel, attachmentsBadge, attachmentsList } from '../components.js';
+import {
+  statusBadge,
+  emptyState,
+  escalationHint,
+  ageLabel,
+  attachmentsBadge,
+  attachmentsList,
+  resolutionTimer,
+} from '../components.js';
+import { openAssignDialog } from '../assign-dialog.js';
 import { showToast } from '../chrome.js';
 
 export const distributionView = {
@@ -31,7 +41,7 @@ export const distributionView = {
         ${[
           emptyState(
             'Нераспределенных сигналов нет',
-            'Как только подрядчик создаст обращение, оно появится здесь — до назначения категории его видите только вы.',
+            'Как только подрядчик создаст обращение, оно появится здесь.',
             html`<a class="btn btn--primary" href="#/admin">Открыть дашборд</a>`,
           ),
         ]}
@@ -55,6 +65,7 @@ export const distributionView = {
             <span class="row__age">Возраст: ${ageLabel(signal, now)}</span>
           </div>
           <h3 class="row__title">${signal.contractorName} · ${signal.sector}</h3>
+          ${[resolutionTimer(signal, { now })]}
           <p class="row__desc">${truncate(signal.description, 240)}</p>
           ${[signal.attachments.length ? attachmentsList(signal.attachments, { compact: true }) : '']}
           <div class="row__foot">
@@ -78,10 +89,7 @@ export const distributionView = {
         <header class="page__head">
           <div>
             <h1 class="page__title">Распределение</h1>
-            <p class="page__lead">
-              Ожидают категории: ${signals.length}. Пока сигнал здесь, его не видит ни один
-              администратор кроме вас.
-            </p>
+            <p class="page__lead">Ожидают категории: ${signals.length}.</p>
           </div>
           <a class="btn btn--secondary" href="#/admin">К карте сигналов</a>
         </header>
@@ -94,13 +102,33 @@ export const distributionView = {
   mount(root) {
     root.querySelectorAll('[data-category]').forEach((button) => {
       button.addEventListener('click', async () => {
+        const signalId = button.dataset.signal;
+        const category = button.dataset.category;
+        const signal = (listUndistributed() ?? []).find((item) => item.id === signalId);
+
+        // Категория выбрана — дальше решаем, кому именно выдать задачу.
+        const picked = await openAssignDialog({
+          signal,
+          category,
+          title: `Направить в «${categoryLabel(category)}»`,
+          confirmLabel: 'Распределить',
+          // Категорию можно назначить и не выбирая исполнителей.
+          allowEmpty: true,
+        });
+        if (!picked) return;
+
         const group = button.closest('.distribute__actions');
         group?.querySelectorAll('button').forEach((item) => (item.disabled = true));
 
         try {
-          const signal = await distribute(button.dataset.signal, button.dataset.category);
-          const label = CATEGORIES.find((category) => category.id === signal.category)?.label ?? 'категорию';
-          showToast(`Сигнал направлен в «${label}»`, 'success');
+          const updated = await distribute(signalId, category, picked.assignees, picked.note);
+          const label = categoryLabel(updated.category);
+          showToast(
+            picked.assignees.length
+              ? `Сигнал направлен в «${label}», исполнителей: ${updated.assignees.length}`
+              : `Сигнал направлен в «${label}»`,
+            'success',
+          );
         } catch (error) {
           group?.querySelectorAll('button').forEach((item) => (item.disabled = false));
           showToast(error.message, 'error');

@@ -18,8 +18,34 @@ import {
   attachmentsList,
   attachmentsBadge,
   assigneeChip,
+  resolutionTimer,
 } from '../components.js';
 import { showToast } from '../chrome.js';
+
+/**
+ * Сводка подрядчика: сколько обращений он подал за все время и сколько
+ * из них решено. Считается только по его собственным сигналам — других
+ * в mySignals не бывает по построению.
+ */
+function contractorStats(signals) {
+  const resolved = signals.filter((signal) => signal.status === STATUS.GREEN).length;
+  const active = signals.filter((signal) => !STATUS_META[signal.status].terminal).length;
+
+  return html`<div class="stats stats--contractor">
+    <div class="stat stat--total">
+      <span class="stat__value">${signals.length}</span>
+      <span class="stat__label">Всего сигналов за все время</span>
+    </div>
+    <div class="stat stat--green">
+      <span class="stat__value">${resolved}</span>
+      <span class="stat__label">Решенных сигналов</span>
+    </div>
+    <div class="stat stat--yellow">
+      <span class="stat__value">${active}</span>
+      <span class="stat__label">Сейчас в работе</span>
+    </div>
+  </div>`;
+}
 
 function bindResolveButtons(root) {
   root.querySelectorAll('[data-resolve]').forEach((button) => {
@@ -51,6 +77,7 @@ export const mySignalsView = {
       return html`
         <section class="page">
           <header class="page__head"><h1 class="page__title">Мои сигналы</h1></header>
+          ${[contractorStats(signals)]}
           ${[
             emptyState(
               'Пока ни одного сигнала',
@@ -72,6 +99,7 @@ export const mySignalsView = {
             <span class="row__age">Возраст: ${ageLabel(signal, now)}</span>
           </div>
           <h3 class="row__title">${signal.contractorName} · ${signal.sector}</h3>
+          ${[resolutionTimer(signal, { now })]}
           <p class="row__desc">${truncate(signal.description, 180)}</p>
           <div class="row__foot">
             <span>Создан ${formatDateTime(signal.createdAt)}</span>
@@ -105,10 +133,11 @@ export const mySignalsView = {
         <header class="page__head">
           <div>
             <h1 class="page__title">Мои сигналы</h1>
-            <p class="page__lead">Всего обращений: ${counters.total}. Вы видите только собственные сигналы.</p>
+            <p class="page__lead">Вы видите только собственные сигналы.</p>
           </div>
           <a class="btn btn--primary" href="#/new">Задать проблему</a>
         </header>
+        ${[contractorStats(signals)]}
         <div class="chips">${chips}</div>
         <div class="rows">${rows}</div>
       </section>
@@ -177,6 +206,8 @@ export const mySignalView = {
             <div><dt>Обновлен</dt><dd>${formatDateTime(signal.updatedAt)}</dd></div>
             <div><dt>Возраст</dt><dd>${ageLabel(signal, now)}</dd></div>
           </dl>
+
+          <div class="detail__timer">${[resolutionTimer(signal, { now, size: 'lg' })]}</div>
 
           <div class="detail__section">
             <h2>Описание</h2>

@@ -16,6 +16,7 @@ import {
   STATUS_META,
   categoryLabel,
 } from '../../shared/constants.js';
+import { isTerminal } from '../../shared/state-machine.js';
 
 const DATE_FORMAT = 'dd.mm.yyyy hh:mm';
 
@@ -82,8 +83,18 @@ export async function buildSignalsWorkbook(filters, actor) {
     { header: 'Автор', key: 'author', width: 24 },
     { header: 'Создан', key: 'createdAt', width: 20, style: { numFmt: DATE_FORMAT } },
     { header: 'Обновлен', key: 'updatedAt', width: 20, style: { numFmt: DATE_FORMAT } },
+    { header: 'Время решения, ч', key: 'resolutionHours', width: 18 },
     { header: 'Вложений', key: 'attachments', width: 12 },
   ];
+
+  // То же время решения, что показывает интерфейс: за вычетом пауз,
+  // у активного сигнала — на момент формирования отчета.
+  const now = Date.now();
+  const resolutionHours = (row) => {
+    const end = isTerminal(row.status) ? (row.closed_at ?? row.updated_at) : now;
+    const ms = Math.max(0, end - row.created_at - (row.paused_ms ?? 0));
+    return Math.round((ms / 3600000) * 10) / 10;
+  };
 
   for (const row of rows) {
     sheet.addRow({
@@ -98,6 +109,7 @@ export async function buildSignalsWorkbook(filters, actor) {
       author: authors.get(row.author_id) ?? String(row.author_id),
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at),
+      resolutionHours: resolutionHours(row),
       attachments: counts.get(row.id) ?? 0,
     });
   }

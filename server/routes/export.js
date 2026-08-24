@@ -4,7 +4,7 @@
  */
 
 import { forbidden, contentDisposition } from '../http.js';
-import { isVerifiedAdmin } from '../identity.js';
+import { isStaff } from '../identity.js';
 import { buildSignalsWorkbook, reportFilename } from '../domain/export.js';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -21,7 +21,7 @@ function sendWorkbook(res, buffer, filename, rows) {
 }
 
 export async function exportSignals(req, res, { actor, url }) {
-  if (!isVerifiedAdmin(actor)) throw forbidden('Экспорт доступен только администратору');
+  if (!isStaff(actor)) throw forbidden('Экспорт доступен администраторам и руководителям');
 
   const filters = {
     category: url.searchParams.get('category') ?? 'all',

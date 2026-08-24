@@ -39,6 +39,19 @@ export function authorLabel(signalId) {
   return store.getState().authorLabels?.[signalId] ?? '—';
 }
 
+/** Статистика решения задач по всей платформе (только для сотрудников). */
+export function resolutionStats() {
+  return store.getState().stats ?? null;
+}
+
+/**
+ * Сколько изменений произошло по сигналу с момента последнего открытия карточки.
+ * 0 — индикатор не показывается вовсе.
+ */
+export function unreadCount(signalId) {
+  return store.getState().unread?.[signalId] ?? 0;
+}
+
 export function filterSignals(signals, { category = 'all', status = 'all', assignment = ASSIGNMENT.ALL } = {}) {
   return signals.filter((signal) => {
     const categoryOk =
@@ -70,17 +83,44 @@ export async function changeStatus(id, status) {
   return result.signal;
 }
 
+/** Вернуть закрытый сигнал в активную фазу — отсчет времени решения продолжится. */
+export async function reopenSignal(id, note) {
+  const result = await api.reopenSignal(id, note);
+  await store.refresh();
+  return result.signal;
+}
+
 export async function updateSignal(id, input) {
   const result = await api.updateSignal(id, input);
   await store.refresh();
   return result.signal;
 }
 
-/** Назначить категорию — действие раздела «Распределение». */
-export async function distribute(id, category) {
-  const result = await api.distributeSignal(id, category);
+/**
+ * Назначить категорию — действие раздела «Распределение».
+ * Вместе с категорией уходят выбранные руководители и заметка к задаче.
+ */
+export async function distribute(id, category, assignees = [], note = null) {
+  const result = await api.distributeSignal(id, category, assignees, note);
   await store.refresh();
   return result.signal;
+}
+
+/** Выдать задачу выбранным сотрудникам и приложить заметку. */
+export async function assignPeople(id, assignees, note) {
+  const result = await api.assignPeople(id, assignees, note);
+  await store.refresh();
+  return result.signal;
+}
+
+/**
+ * Отметить карточку просмотренной. Индикатор новых изменений сбрасывается,
+ * поэтому состояние перечитывается — иначе кружок остался бы висеть до
+ * следующего события с сервера.
+ */
+export async function markSeen(id) {
+  await api.markSignalSeen(id);
+  await store.refresh();
 }
 
 /**

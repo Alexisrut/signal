@@ -22,20 +22,35 @@ import {
   ROLE,
   SIGNAL_FIELD_LABELS,
   STATUS,
+  STATUS_META,
   SYSTEM_ACTOR,
   categoryLabel,
+  isCategoryScopedRole,
 } from '../../shared/constants.js';
 import {
   canAssign,
+  canAssignOthers,
   canDistribute,
   canEdit,
   canRelease,
+  canReopen,
   canTransition,
   isAssignedTo,
   isEscalationDue,
+  isTerminal,
   notificationEventFor,
+  reopenTargetStatus,
+  resolutionMs,
 } from '../../shared/state-machine.js';
 import { validateSignalInput } from '../../shared/validation.js';
+
+/** Заметка к распределению: обрезаем и приводим к null, чтобы не хранить пустую строку. */
+const MAX_NOTE_LENGTH = 1000;
+
+function cleanNote(value) {
+  const text = String(value ?? '').trim().slice(0, MAX_NOTE_LENGTH);
+  return text || null;
+}
 
 function safeParse(json) {
   try {
@@ -56,7 +71,11 @@ function toSignal(row, history = [], attachments = [], assignees = []) {
     description: row.description,
     status: row.status,
     assignees,
+    assignmentNote: row.assignment_note ?? null,
     distributedAt: row.distributed_at ?? null,
+    closedAt: row.closed_at ?? null,
+    // Время, проведенное в закрытом состоянии: вычитается из времени решения.
+    pausedMs: row.paused_ms ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     history,
@@ -128,9 +147,9 @@ export function listUndistributed() {
 }
 
 /**
- * Что администратор видит на дашборде: только распределенные сигналы.
- * Главный видит все категории, обычный — разрешенные ему; нераспределенные
- * живут отдельно, в разделе «Распределение».
+ * Что сотрудник видит на дашборде: только распределенные сигналы.
+ * Главный администратор видит все категории, администратор и руководитель —
+ * закрепленные за ними; нераспределенные живут отдельно, в «Распределении».
  */
 export function listForAdmin(actor) {
   if (actor.role === ROLE.SUPERADMIN) {
@@ -146,6 +165,44 @@ export function listForAdmin(actor) {
   );
 }
 
+/**
+ * Статистика решения задач по всей платформе — не по видимым актору категориям:
+ * раскрывающаяся строка на дашборде обещает именно общую картину.
+ * Время решения берется из конечного автомата, поэтому паузы уже учтены.
+ */
+export function resolutionStats() {
+  // Истории и вложения здесь не нужны: время решения считается по меткам
+  // времени самой строки, поэтому обходимся без гидратации.
+  const rows = sql.all(`SELECT * FROM signals WHERE status = ?`, [STATUS.GREEN]);
+
+  const totals = new Map(CATEGORY_IDS.map((id) => [id, { resolved: 0, totalMs: 0 }]));
+  let resolved = 0;
+  let totalMs = 0;
+
+  for (const row of rows) {
+    const ms = resolutionMs(toSignal(row));
+    resolved += 1;
+    totalMs += ms;
+
+    const bucket = totals.get(row.category);
+    if (!bucket) continue; // нераспределенный решенный сигнал в разрезе категорий не участвует
+    bucket.resolved += 1;
+    bucket.totalMs += ms;
+  }
+
+  return {
+    overall: { resolved, avgMs: resolved ? Math.round(totalMs / resolved) : null },
+    byCategory: CATEGORY_IDS.map((id) => {
+      const bucket = totals.get(id);
+      return {
+        id,
+        resolved: bucket.resolved,
+        avgMs: bucket.resolved ? Math.round(bucket.totalMs / bucket.resolved) : null,
+      };
+    }),
+  };
+}
+
 export function getRaw(id) {
   return sql.get(`SELECT * FROM signals WHERE id = ?`, [id]);
 }
@@ -156,13 +213,13 @@ export function getById(id) {
   return toSignal(row, historyFor([id]).get(id) ?? [], listAttachments(ENTITY.SIGNAL, id), listOne(ASSIGNABLE.SIGNAL, id));
 }
 
-/** Доступ с учетом роли: подрядчик видит свой, администратор — разрешенные категории. */
+/** Доступ с учетом роли: подрядчик видит свой, сотрудник — разрешенные категории. */
 export function getForActor(id, actor) {
   const signal = getById(id);
   if (!signal) return null;
 
   if (actor.role === ROLE.SUPERADMIN) return signal;
-  if (actor.role === ROLE.ADMIN) {
+  if (isCategoryScopedRole(actor.role)) {
     return signal.category && (actor.categories ?? []).includes(signal.category) ? signal : null;
   }
   return signal.authorId === actor.id ? signal : null;
@@ -179,8 +236,8 @@ export function queryForExport({ category = 'all', status = 'all', assignment = 
     params.push(category);
   }
 
-  // Обычный администратор выгружает только то, что ему видно.
-  if (actor?.role === ROLE.ADMIN) {
+  // Администратор и руководитель выгружают только то, что им видно.
+  if (isCategoryScopedRole(actor?.role)) {
     const allowed = actor.categories ?? [];
     if (!allowed.length) return [];
     where.push(`category IN (${allowed.map(() => '?').join(', ')})`);
@@ -254,40 +311,122 @@ export function createSignal(input, actor) {
   return signal;
 }
 
-/** Назначить категорию: раздел «Распределение» главного администратора. */
-export function distribute(signalId, category, actor) {
+/**
+ * Назначить категорию: раздел «Распределение» главного администратора.
+ *
+ * Вместе с категорией можно сразу выдать задачу нескольким руководителям
+ * (в том числе курирующим другие категории) и приложить заметку — ее увидят
+ * все ответственные за сигнал.
+ */
+export function distribute(signalId, category, actor, { assignees: people = [], note = null } = {}) {
   const before = getById(signalId);
   if (!before) throw notFound('Сигнал не найден');
 
   const verdict = canDistribute(before, actor);
   if (!verdict.allowed) throw forbidden(verdict.reason);
   if (!CATEGORY_IDS.includes(category)) throw badRequest('Неизвестная категория');
-  if (before.category === category) return before;
+
+  const categoryChanged = before.category !== category;
+  const now = Date.now();
+
+  if (categoryChanged) {
+    sql.transaction(() => {
+      sql.run(`UPDATE signals SET category = ?, distributed_at = ?, updated_at = ? WHERE id = ?`, [
+        category,
+        before.distributedAt ?? now,
+        now,
+        signalId,
+      ]);
+
+      insertHistory(signalId, {
+        kind: HISTORY_KIND.CATEGORY,
+        from: before.status,
+        to: before.status,
+        actor,
+        at: now,
+        note: before.category
+          ? `Категория изменена: ${categoryLabel(before.category)} → ${categoryLabel(category)}`
+          : `Распределен в категорию «${categoryLabel(category)}»`,
+        details: { from: categoryLabel(before.category), to: categoryLabel(category) },
+      });
+    });
+
+    publish('signal', { id: signalId, category });
+  }
+
+  // Назначение исполнителей и заметка — самостоятельная операция: она
+  // применима и при повторном распределении в ту же категорию.
+  if (people.length || cleanNote(note)) return assignPeople(signalId, people, actor, note);
+
+  return getById(signalId);
+}
+
+/**
+ * Выдать задачу конкретным людям и приложить заметку.
+ * Уже назначенные пропускаются, чужие идентификаторы игнорируются.
+ */
+export function assignPeople(signalId, userIds, actor, note = null) {
+  const before = getById(signalId);
+  if (!before) throw notFound('Сигнал не найден');
+  assertVisible(before, actor);
+
+  const verdict = canAssignOthers(before, actor);
+  if (!verdict.allowed) throw forbidden(verdict.reason);
+
+  // Повторное сохранение той же заметки не считается изменением: окно назначения
+  // подставляет текущий текст, и без этой проверки каждое открытие плодило бы
+  // одинаковые записи в истории.
+  const raw = cleanNote(note);
+  const text = raw && raw !== before.assignmentNote ? raw : null;
+
+  const requested = [...new Set((Array.isArray(userIds) ? userIds : []).map(String))];
+  const people = requested.map((id) => findUser(id)).filter((user) => user && isStaffUser(user));
+
+  if (requested.length && !people.length) throw badRequest('Ни один из выбранных сотрудников не найден');
+  if (!people.length && !text) return before;
 
   const now = Date.now();
-  sql.transaction(() => {
-    sql.run(`UPDATE signals SET category = ?, distributed_at = ?, updated_at = ? WHERE id = ?`, [
-      category,
-      before.distributedAt ?? now,
-      now,
-      signalId,
-    ]);
+  const added = [];
 
-    insertHistory(signalId, {
-      kind: HISTORY_KIND.CATEGORY,
-      from: before.status,
-      to: before.status,
-      actor,
-      at: now,
-      note: before.category
-        ? `Категория изменена: ${categoryLabel(before.category)} → ${categoryLabel(category)}`
-        : `Распределен в категорию «${categoryLabel(category)}»`,
-      details: { from: categoryLabel(before.category), to: categoryLabel(category) },
-    });
+  sql.transaction(() => {
+    for (const person of people) {
+      if (addAssignee(ASSIGNABLE.SIGNAL, signalId, person, now)) added.push(person);
+    }
+
+    if (added.length) {
+      insertHistory(signalId, {
+        kind: HISTORY_KIND.ASSIGN,
+        from: before.status,
+        to: before.status,
+        actor,
+        at: now,
+        note: `Задача назначена: ${added.map((person) => person.displayName).join(', ')}`,
+        details: { assigned: added.map((person) => ({ id: person.id, name: person.displayName })) },
+      });
+    }
+
+    if (text) {
+      sql.run(`UPDATE signals SET assignment_note = ? WHERE id = ?`, [text, signalId]);
+      insertHistory(signalId, {
+        kind: HISTORY_KIND.NOTE,
+        from: before.status,
+        to: before.status,
+        actor,
+        at: now,
+        note: text,
+      });
+    }
+
+    sql.run(`UPDATE signals SET updated_at = ? WHERE id = ?`, [now, signalId]);
   });
 
-  publish('signal', { id: signalId, category });
+  publish('signal', { id: signalId, assigned: added.length });
   return getById(signalId);
+}
+
+/** Может ли этот пользователь быть исполнителем сигнала. */
+function isStaffUser(user) {
+  return user.role === ROLE.MANAGER || user.role === ROLE.ADMIN || user.role === ROLE.SUPERADMIN;
 }
 
 /**
@@ -298,7 +437,7 @@ export function distribute(signalId, category, actor) {
 function assertVisible(signal, actor) {
   if (actor.role === ROLE.SUPERADMIN || actor.role === ROLE.SYSTEM) return;
 
-  if (actor.role === ROLE.ADMIN) {
+  if (isCategoryScopedRole(actor.role)) {
     if (!signal.category || !(actor.categories ?? []).includes(signal.category)) {
       throw notFound('Сигнал не найден');
     }
@@ -320,12 +459,64 @@ export function changeStatus(signalId, to, actor, note = null) {
 
   const now = Date.now();
   sql.transaction(() => {
-    sql.run(`UPDATE signals SET status = ?, updated_at = ? WHERE id = ?`, [to, now, signalId]);
+    // Момент закрытия фиксируется явно: время решения нельзя выводить
+    // из updated_at, потому что закрытую карточку еще правят и комментируют.
+    sql.run(`UPDATE signals SET status = ?, closed_at = ?, updated_at = ? WHERE id = ?`, [
+      to,
+      isTerminal(to) ? now : null,
+      now,
+      signalId,
+    ]);
     insertHistory(signalId, { kind: HISTORY_KIND.STATUS, from: before.status, to, actor, at: now, note });
   });
 
   const signal = getById(signalId);
   publish('signal', { id: signalId, status: to });
+
+  notifySignalEvent(notificationEventFor(before.status, to), signal, actor);
+
+  return signal;
+}
+
+/**
+ * ВОЗОБНОВЛЕНИЕ. Закрытый сигнал возвращается в ту активную фазу, из которой
+ * его закрыли, а время простоя уходит в `paused_ms` — значит, счетчик времени
+ * решения продолжается с того же места, а не стартует заново.
+ */
+export function reopenSignal(signalId, actor, note = null) {
+  const before = getById(signalId);
+  if (!before) throw notFound('Сигнал не найден');
+  assertVisible(before, actor);
+
+  const verdict = canReopen(before, actor);
+  if (!verdict.allowed) throw forbidden(verdict.reason);
+
+  const to = reopenTargetStatus(before);
+  const now = Date.now();
+  const pause = Math.max(0, now - (before.closedAt ?? now));
+  const text = cleanNote(note);
+
+  sql.transaction(() => {
+    sql.run(`UPDATE signals SET status = ?, closed_at = NULL, paused_ms = paused_ms + ?, updated_at = ? WHERE id = ?`, [
+      to,
+      pause,
+      now,
+      signalId,
+    ]);
+
+    insertHistory(signalId, {
+      kind: HISTORY_KIND.REOPEN,
+      from: before.status,
+      to,
+      actor,
+      at: now,
+      note: text ?? `Сигнал возобновлен: «${STATUS_META[before.status].short}» → «${STATUS_META[to].short}»`,
+      details: { pausedMs: pause },
+    });
+  });
+
+  const signal = getById(signalId);
+  publish('signal', { id: signalId, status: to, reopened: true });
 
   notifySignalEvent(notificationEventFor(before.status, to), signal, actor);
 
@@ -456,6 +647,48 @@ export function updateSignal(signalId, input, actor) {
 
   publish('signal', { id: signalId, edited: true });
   return getById(signalId);
+}
+
+/* ------------------------- индикатор новых изменений -------------------------- */
+
+/**
+ * Запомнить, что пользователь открывал карточку. Индикатор на карточке
+ * сравнивает эту метку с лентой истории, поэтому «сбросить кружок» —
+ * это ровно одна запись сюда.
+ */
+export function markSeen(signalId, userId, at = Date.now()) {
+  if (!getRaw(signalId)) throw notFound('Сигнал не найден');
+  sql.run(
+    `INSERT INTO signal_views (user_id, signal_id, seen_at) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, signal_id) DO UPDATE SET seen_at = excluded.seen_at`,
+    [userId, signalId, at],
+  );
+  return { signalId, seenAt: at };
+}
+
+/**
+ * Число изменений по каждому сигналу с момента последнего открытия карточки
+ * этим пользователем. Собственные действия не считаются: показывать человеку
+ * непрочитанным то, что он сам только что сделал, бессмысленно.
+ *
+ * @returns {Record<string, number>} только сигналы с ненулевым счетчиком
+ */
+export function unreadFor(userId, signalIds) {
+  if (!signalIds.length) return {};
+
+  const placeholders = signalIds.map(() => '?').join(', ');
+  const rows = sql.all(
+    `SELECT h.signal_id AS id, COUNT(*) AS n
+       FROM signal_history h
+       LEFT JOIN signal_views v ON v.signal_id = h.signal_id AND v.user_id = ?
+      WHERE h.signal_id IN (${placeholders})
+        AND h.by_id <> ?
+        AND h.at > COALESCE(v.seen_at, 0)
+      GROUP BY h.signal_id`,
+    [userId, ...signalIds, userId],
+  );
+
+  return Object.fromEntries(rows.filter((row) => row.n > 0).map((row) => [row.id, row.n]));
 }
 
 /** Отображаемое имя автора — для карточки в панели администратора. */

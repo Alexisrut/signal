@@ -7,6 +7,7 @@
 export const ROLE = {
   CONTRACTOR: 'contractor',
   ADMIN: 'admin',
+  MANAGER: 'manager',
   SUPERADMIN: 'superadmin',
   SYSTEM: 'system',
 };
@@ -14,12 +15,58 @@ export const ROLE = {
 export const ROLE_LABEL = {
   [ROLE.CONTRACTOR]: 'Подрядчик',
   [ROLE.ADMIN]: 'Администратор',
+  [ROLE.MANAGER]: 'Руководитель',
   [ROLE.SUPERADMIN]: 'Главный администратор',
   [ROLE.SYSTEM]: 'Система',
 };
 
 /** Администраторы обеих разновидностей. */
 export const isAdminRole = (role) => role === ROLE.ADMIN || role === ROLE.SUPERADMIN;
+
+/**
+ * Сотрудники платформы: администраторы и руководители. Им доступны дашборд,
+ * карточки сигналов и работа со статусами; отличие руководителя от
+ * администратора — только в наборе курируемых категорий.
+ */
+export const isStaffRole = (role) => isAdminRole(role) || role === ROLE.MANAGER;
+
+/** Роли, чей доступ ограничен списком категорий. */
+export const isCategoryScopedRole = (role) => role === ROLE.ADMIN || role === ROLE.MANAGER;
+
+/**
+ * Типы учетных записей, которые главный администратор заводит вручную.
+ * Подрядчик в список не входит: он регистрируется сам.
+ */
+export const ACCOUNT_TYPES = [
+  {
+    id: ROLE.ADMIN,
+    label: 'Администратор',
+    hint: 'Видит сигналы отмеченных категорий и управляет ими.',
+    categoriesLabel: 'Видимые категории сигналов',
+    categoriesHint: 'Администратор увидит на дашборде только отмеченные категории. Набор можно изменить позже.',
+  },
+  {
+    id: ROLE.MANAGER,
+    label: 'Руководитель',
+    hint: 'Отвечает за курируемые категории и попадает в списки для распределения.',
+    categoriesLabel: 'Курируемые категории',
+    categoriesHint:
+      'Руководителю видны сигналы этих категорий, и он отображается в списках выбора при распределении.',
+  },
+  {
+    id: ROLE.SUPERADMIN,
+    label: 'Главный админ',
+    hint: 'Полный доступ: распределение сигналов и управление учетными записями.',
+    categoriesLabel: 'Категории',
+    categoriesHint: 'Главному администратору доступны все категории — выбор не требуется.',
+  },
+];
+
+export const ACCOUNT_TYPE_IDS = ACCOUNT_TYPES.map((type) => type.id);
+
+export function accountType(role) {
+  return ACCOUNT_TYPES.find((type) => type.id === role) ?? ACCOUNT_TYPES[0];
+}
 
 /* --------------------------------- Сигналы ---------------------------------- */
 
@@ -101,10 +148,10 @@ export function categoryShort(id) {
 
 export const isDistributed = (signal) => Boolean(signal?.category);
 
-/** Видит ли администратор сигнал этой категории. */
+/** Видит ли сотрудник сигнал этой категории. */
 export function canSeeCategory(user, category) {
   if (user?.role === ROLE.SUPERADMIN) return true;
-  if (user?.role !== ROLE.ADMIN) return false;
+  if (!isCategoryScopedRole(user?.role)) return false;
   if (!category) return false; // нераспределенные видит только главный администратор
   return (user.categories ?? []).includes(category);
 }
@@ -152,6 +199,8 @@ export const HISTORY_KIND = {
   ASSIGN: 'assign',
   RELEASE: 'release',
   CATEGORY: 'category',
+  NOTE: 'note',
+  REOPEN: 'reopen',
 };
 
 export const HISTORY_KIND_LABEL = {
@@ -161,6 +210,8 @@ export const HISTORY_KIND_LABEL = {
   [HISTORY_KIND.ASSIGN]: 'Принято в работу',
   [HISTORY_KIND.RELEASE]: 'Снято с исполнителя',
   [HISTORY_KIND.CATEGORY]: 'Распределение',
+  [HISTORY_KIND.NOTE]: 'Заметка',
+  [HISTORY_KIND.REOPEN]: 'Возобновление',
 };
 
 /** Фильтр по принятию в работу. `all` — ничего не выбрано, показываются все. */
@@ -169,12 +220,6 @@ export const ASSIGNMENT = {
   ASSIGNED: 'assigned',
   FREE: 'free',
 };
-
-export const ASSIGNMENT_FILTERS = [
-  { id: ASSIGNMENT.ALL, label: 'Все' },
-  { id: ASSIGNMENT.ASSIGNED, label: 'Принятые' },
-  { id: ASSIGNMENT.FREE, label: 'Непринятые' },
-];
 
 /** Поля, доступные для редактирования, — и их подписи в истории правок. */
 export const SIGNAL_FIELD_LABELS = {
@@ -190,21 +235,68 @@ export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
 /** Время жизни токена подтверждения почты. */
 export const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 
-/**
- * События, по которым уходят письма. Фильтрация получателей убрана:
- * письмо получает каждый администратор с подтвержденной почтой.
- */
+/** Ссылка восстановления пароля живет меньше: она дает вход в учетную запись. */
+export const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+/** События, по которым уходят письма. */
 export const NOTIFICATION_EVENT = {
   CREATE: 'create',
   RED: 'red',
   RESOLVE: 'resolve',
+  REOPEN: 'reopen',
 };
 
 export const NOTIFICATION_EVENT_LABEL = {
   [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
   [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
   [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
+  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
 };
+
+/** Подписки сотрудника: общий тумблер плюс выбор событий. */
+export const NOTIFICATION_EVENTS = [
+  { id: NOTIFICATION_EVENT.CREATE, label: 'Новый сигнал в системе' },
+  { id: NOTIFICATION_EVENT.RED, label: 'Сигнал стал критичным' },
+  { id: NOTIFICATION_EVENT.RESOLVE, label: 'Сигнал закрыт' },
+  { id: NOTIFICATION_EVENT.REOPEN, label: 'Сигнал возобновлен' },
+];
+
+export const NOTIFICATION_EVENT_IDS = NOTIFICATION_EVENTS.map((event) => event.id);
+
+/**
+ * Настройки почтовых уведомлений.
+ *
+ * У сотрудника — общий тумблер и набор событий. У подрядчика выбора событий нет:
+ * ему приходит письмо только при смене статуса его собственной проблемы,
+ * поэтому в интерфейсе остается один тумблер.
+ */
+export const DEFAULT_NOTIFY = Object.freeze({ enabled: true, events: [...NOTIFICATION_EVENT_IDS] });
+
+export function normalizeNotify(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const events = Array.isArray(source.events)
+    ? [...new Set(source.events.filter((id) => NOTIFICATION_EVENT_IDS.includes(id)))]
+    : [...NOTIFICATION_EVENT_IDS];
+
+  return { enabled: source.enabled !== false, events };
+}
+
+/** Нужно ли слать письмо этому получателю по этому событию. */
+export function wantsNotification(notify, event) {
+  const prefs = normalizeNotify(notify);
+  return prefs.enabled && prefs.events.includes(event);
+}
+
+/* ------------------------------- оформление ---------------------------------- */
+
+export const THEME = { DARK: 'dark', LIGHT: 'light' };
+
+export const THEMES = [
+  { id: THEME.DARK, label: 'Темная', icon: '☾' },
+  { id: THEME.LIGHT, label: 'Светлая', icon: '☀' },
+];
+
+export const THEME_STORAGE_KEY = 'sms-theme';
 
 /* --------------------------------- Вложения ---------------------------------- */
 

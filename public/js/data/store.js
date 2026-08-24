@@ -19,7 +19,11 @@ let state = {
   allSignals: null,
   undistributed: null,
   users: null,
+  assignables: null,
+  stats: null,
   authorLabels: {},
+  // Индикаторы «сколько изменений с прошлого захода», по одному числу на сигнал.
+  unread: {},
   meta: {},
 };
 
@@ -52,7 +56,13 @@ export function refresh() {
   pendingRefresh = api
     .getState()
     .then((next) => {
-      state = { ...next, ready: true, offline: false, authorLabels: next.authorLabels ?? {} };
+      state = {
+        ...next,
+        ready: true,
+        offline: false,
+        authorLabels: next.authorLabels ?? {},
+        unread: next.unread ?? {},
+      };
       notify({ source: 'refresh' });
       return state;
     })

@@ -41,18 +41,30 @@ export const api = {
   createSignal: (input) => request('POST', '/api/signals', input),
   updateSignal: (id, input) => request('PUT', `/api/signals/${encodeURIComponent(id)}`, input),
   changeSignalStatus: (id, status) => request('POST', `/api/signals/${encodeURIComponent(id)}/status`, { status }),
+  reopenSignal: (id, note) => request('POST', `/api/signals/${encodeURIComponent(id)}/reopen`, { note }),
   assignSignal: (id, assign, userId) =>
     request('POST', `/api/signals/${encodeURIComponent(id)}/assign`, { assign, userId }),
-  distributeSignal: (id, category) => request('POST', `/api/signals/${encodeURIComponent(id)}/category`, { category }),
+  assignPeople: (id, assignees, note) =>
+    request('POST', `/api/signals/${encodeURIComponent(id)}/assignees`, { assignees, note }),
+  markSignalSeen: (id) => request('POST', `/api/signals/${encodeURIComponent(id)}/seen`),
+  distributeSignal: (id, category, assignees, note) =>
+    request('POST', `/api/signals/${encodeURIComponent(id)}/category`, { category, assignees, note }),
   ageSignal: (id) => request('POST', `/api/signals/${encodeURIComponent(id)}/age`),
 
   login: (login, password) => request('POST', '/api/auth/login', { login, password }),
   logout: () => request('POST', '/api/auth/logout'),
   register: (input) => request('POST', '/api/auth/register', input),
 
+  forgotPassword: (identifier) => request('POST', '/api/auth/forgot', { identifier }),
+  checkResetToken: (token) => request('GET', `/api/auth/reset?token=${encodeURIComponent(token)}`),
+  resetPassword: (input) => request('POST', '/api/auth/reset', input),
+  changePassword: (input) => request('POST', '/api/auth/password', input),
+
   createAdmin: (input) => request('POST', '/api/admins', input),
   updateUserCategories: (id, categories) =>
     request('PUT', `/api/users/${encodeURIComponent(id)}/categories`, { categories }),
+  deleteUser: (id) => request('DELETE', `/api/users/${encodeURIComponent(id)}`),
+  updateNotify: (notify) => request('PUT', '/api/notifications', { notify }),
   resendVerification: () => request('POST', '/api/verification/resend'),
 
   /** Загрузка файлов идет multipart-ом, поэтому в обход request(). */

@@ -19,9 +19,22 @@
  * Красный ставит фоновый процесс по достижении порога 48 часов, а с версии
  * с ручной эскалацией — еще и администратор, не дожидаясь порога. В истории
  * эти два случая различимы: у автоматического автор события — Система.
+ *
+ * ВОЗОБНОВЛЕНИЕ. Терминальный статус больше не тупик: сотрудник, которому виден
+ * сигнал, возвращает его в ту активную фазу, из которой сигнал был закрыт.
+ * Время, проведенное в закрытом состоянии, копится в `pausedMs` и вычитается
+ * из времени решения — таймер продолжает идти с того же места, а не с нуля.
  */
 
-import { STATUS, STATUS_META, ROLE, ESCALATION_MS, NOTIFICATION_EVENT, isAdminRole } from './constants.js';
+import {
+  STATUS,
+  STATUS_META,
+  ROLE,
+  ESCALATION_MS,
+  HISTORY_KIND,
+  NOTIFICATION_EVENT,
+  isStaffRole,
+} from './constants.js';
 
 /** Декларативное описание разрешенных переходов. */
 export const TRANSITIONS = [
@@ -53,10 +66,21 @@ export function isActive(status) {
   return status === STATUS.YELLOW || status === STATUS.RED;
 }
 
-/** Момент входа сигнала в Желтый статус (для отсчета порога эскалации). */
+/** Суммарное время, проведенное сигналом в закрытом состоянии. */
+export function pausedMs(signal) {
+  return Math.max(0, Number(signal?.pausedMs) || 0);
+}
+
+/**
+ * Момент входа сигнала в Желтый статус (для отсчета порога эскалации).
+ * Возобновление отсчет не сбрасывает — оно лишь снимает сигнал с паузы,
+ * поэтому записи с видом `reopen` пропускаются.
+ */
 export function yellowSince(signal) {
-  for (let i = signal.history.length - 1; i >= 0; i -= 1) {
-    if (signal.history[i].to === STATUS.YELLOW) return signal.history[i].at;
+  const history = signal.history ?? [];
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].kind === HISTORY_KIND.REOPEN) continue;
+    if (history[i].to === STATUS.YELLOW) return history[i].at;
   }
   return signal.createdAt;
 }
@@ -64,7 +88,19 @@ export function yellowSince(signal) {
 /** Момент, в который сигнал должен быть эскалирован; null — если он не Желтый. */
 export function escalationDueAt(signal) {
   if (signal.status !== STATUS.YELLOW) return null;
-  return yellowSince(signal) + ESCALATION_MS;
+  // Пауза сдвигает порог вперед ровно на свою длительность.
+  return yellowSince(signal) + ESCALATION_MS + pausedMs(signal);
+}
+
+/**
+ * Время решения: сколько сигнал реально прожил как проблема.
+ * У закрытого — от создания до закрытия, у активного — до текущего момента;
+ * в обоих случаях за вычетом пауз между закрытием и возобновлением.
+ */
+export function resolutionMs(signal, now = Date.now()) {
+  if (!signal) return 0;
+  const end = isTerminal(signal.status) ? (signal.closedAt ?? signal.updatedAt) : now;
+  return Math.max(0, end - signal.createdAt - pausedMs(signal));
 }
 
 export function isEscalationDue(signal, now = Date.now()) {
@@ -84,7 +120,7 @@ export function canTransition(signal, to, actor) {
   if (isTerminal(signal.status)) {
     return {
       allowed: false,
-      reason: `Статус «${STATUS_META[signal.status].short}» терминальный — изменения запрещены`,
+      reason: `Статус «${STATUS_META[signal.status].short}» закрыт — сначала возобновите сигнал`,
     };
   }
 
@@ -102,25 +138,51 @@ export function canTransition(signal, to, actor) {
   }
 
   const isSystem = actor?.role === ROLE.SYSTEM;
-  const isAdminActor = isAdminRole(actor?.role);
+  const isStaffActor = isStaffRole(actor?.role);
   const isAuthor = actor?.id === signal.authorId;
 
   switch (rule.actor) {
     case 'system-or-admin':
-      return isSystem || isAdminActor
+      return isSystem || isStaffActor
         ? { allowed: true }
-        : { allowed: false, reason: 'Перевести сигнал в Красный может система или администратор' };
+        : { allowed: false, reason: 'Перевести сигнал в Красный может система или сотрудник платформы' };
     case 'admin':
-      return isAdminActor
+      return isStaffActor
         ? { allowed: true }
-        : { allowed: false, reason: 'Отклонить сигнал может только администратор' };
+        : { allowed: false, reason: 'Отклонить сигнал может только администратор или руководитель' };
     case 'author-or-admin':
-      return isAdminActor || isAuthor
+      return isStaffActor || isAuthor
         ? { allowed: true }
-        : { allowed: false, reason: 'Закрыть сигнал может только его автор или администратор' };
+        : { allowed: false, reason: 'Закрыть сигнал может только его автор, администратор или руководитель' };
     default:
       return { allowed: false, reason: 'Переход не предусмотрен' };
   }
+}
+
+/**
+ * Статус, в который вернется закрытый сигнал при возобновлении, — тот,
+ * из которого его закрыли. Если след потерян, считаем сигнал новым.
+ */
+export function reopenTargetStatus(signal) {
+  const history = signal?.history ?? [];
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i];
+    if (isTerminal(entry.to) && entry.from && isActive(entry.from)) return entry.from;
+  }
+  return STATUS.YELLOW;
+}
+
+/**
+ * Возобновление закрытого сигнала. Доступно администраторам и руководителям;
+ * видимость сигнала проверяется отдельно — здесь только роль и статус.
+ */
+export function canReopen(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (!isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал и так находится в активной фазе' };
+  if (!isStaffRole(actor?.role)) {
+    return { allowed: false, reason: 'Возобновить сигнал может администратор или руководитель' };
+  }
+  return { allowed: true };
 }
 
 /** Статусы, которые актор может выставить вручную прямо сейчас. */
@@ -135,7 +197,7 @@ export function availableManualTransitions(signal, actor) {
  */
 export function canEdit(signal, actor) {
   if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
-  if (isAdminRole(actor?.role)) return { allowed: true };
+  if (isStaffRole(actor?.role)) return { allowed: true };
   if (actor?.id !== signal.authorId) return { allowed: false, reason: 'Редактировать может автор или администратор' };
   if (isTerminal(signal.status)) {
     return { allowed: false, reason: 'Сигнал закрыт — редактирование недоступно' };
@@ -158,16 +220,27 @@ export function isAssignedTo(entity, userId) {
  */
 export function canAssign(signal, actor) {
   if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
-  if (!isAdminRole(actor?.role)) return { allowed: false, reason: 'Принимать в работу может только администратор' };
+  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Принимать в работу может только сотрудник платформы' };
   if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт' };
   if (isAssignedTo(signal, actor.id)) return { allowed: false, reason: 'Вы уже в работе по этому сигналу' };
   return { allowed: true };
 }
 
-/** Снять исполнителя — себя или коллегу — может любой администратор. */
+/**
+ * Назначить на сигнал других людей (раздел «Распределение» и карточка сигнала).
+ * Это не «принять в работу себя», а именно раздача задачи руководителям.
+ */
+export function canAssignOthers(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Назначать исполнителей может только сотрудник платформы' };
+  if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт — сначала возобновите его' };
+  return { allowed: true };
+}
+
+/** Снять исполнителя — себя или коллегу — может любой сотрудник платформы. */
 export function canRelease(signal, actor, userId = actor?.id) {
   if (!assignees(signal).length) return { allowed: false, reason: 'Сигнал никем не принят' };
-  if (!isAdminRole(actor?.role)) return { allowed: false, reason: 'Доступно только администратору' };
+  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Доступно только сотруднику платформы' };
   if (!isAssignedTo(signal, userId)) return { allowed: false, reason: 'Этот исполнитель не в работе по сигналу' };
   return { allowed: true };
 }
@@ -183,6 +256,8 @@ export function canRelease(signal, actor, userId = actor?.id) {
  */
 export function notificationEventFor(from, to) {
   if (from === null && to === STATUS.YELLOW) return NOTIFICATION_EVENT.CREATE;
+  // Выход из терминального статуса — это возобновление, а не рядовая эскалация.
+  if (isTerminal(from) && isActive(to)) return NOTIFICATION_EVENT.REOPEN;
   if (to === STATUS.RED) return NOTIFICATION_EVENT.RED;
   if (to === STATUS.GREEN || to === STATUS.GRAY) return NOTIFICATION_EVENT.RESOLVE;
   return null;

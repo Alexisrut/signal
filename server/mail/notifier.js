@@ -4,24 +4,40 @@
  * Точка входа одна — `notifySignalEvent`, и вызывается она только из сервиса
  * сигналов сразу после успешного перехода конечного автомата.
  *
- * Фильтрация получателей убрана: письмо получают все администраторы
- * с подтвержденной почтой, настроек рассылки больше нет.
+ * Получателей два вида:
+ *   • сотрудники — по личным подпискам (общий тумблер плюс набор событий);
+ *   • автор-подрядчик — по одному тумблеру и только на смену статуса
+ *     его собственной проблемы, о создании он и так знает.
  */
 
 import { sql } from '../db.js';
 import { APP_URL } from '../config.js';
 import { toUser } from '../identity.js';
 import { sendMail, deliveryMode } from './transport.js';
-import { verificationEmail, signalNotificationEmail } from './templates.js';
+import { verificationEmail, passwordResetEmail, signalNotificationEmail } from './templates.js';
 
-import { ROLE, EMAIL_TOKEN_TTL_MS } from '../../shared/constants.js';
+import {
+  ROLE,
+  NOTIFICATION_EVENT,
+  EMAIL_TOKEN_TTL_MS,
+  RESET_TOKEN_TTL_MS,
+  wantsNotification,
+} from '../../shared/constants.js';
 
 export function signalUrl(signalId) {
   return `${APP_URL}/#/admin/signal/${signalId}`;
 }
 
+export function contractorSignalUrl(signalId) {
+  return `${APP_URL}/#/my/${signalId}`;
+}
+
 export function verificationUrl(token) {
   return `${APP_URL}/verify?token=${encodeURIComponent(token)}`;
+}
+
+export function resetUrl(token) {
+  return `${APP_URL}/reset?token=${encodeURIComponent(token)}`;
 }
 
 export async function sendVerificationEmail(user, token) {
@@ -35,12 +51,37 @@ export async function sendVerificationEmail(user, token) {
   return { mode: deliveryMode, ...result };
 }
 
-/** Получатели: все администраторы с подтвержденной почтой. */
-function recipients() {
+export async function sendPasswordResetEmail(user, token) {
+  const message = passwordResetEmail({
+    user,
+    url: resetUrl(token),
+    ttlMinutes: Math.round(RESET_TOKEN_TTL_MS / 60000),
+  });
+
+  const result = await sendMail({ ...message, to: user.email, kind: 'password-reset', entityId: user.id });
+  return { mode: deliveryMode, ...result };
+}
+
+/** Сотрудники, подписанные на это событие. */
+function staffRecipients(event) {
   return sql
-    .all(`SELECT * FROM users WHERE role IN (?, ?) AND is_email_verified = 1`, [ROLE.ADMIN, ROLE.SUPERADMIN])
+    .all(`SELECT * FROM users WHERE role IN (?, ?, ?)`, [ROLE.ADMIN, ROLE.MANAGER, ROLE.SUPERADMIN])
     .map(toUser)
-    .filter((user) => Boolean(user.email));
+    .filter((user) => Boolean(user.email) && wantsNotification(user.notify, event));
+}
+
+/**
+ * Автор сигнала, если это подрядчик с включенным тумблером.
+ * Событие создания ему не отправляется: письмо о собственном обращении —
+ * шум, тумблер обещает письма «при смене статуса проблемы».
+ */
+function contractorRecipient(signal, event) {
+  if (event === NOTIFICATION_EVENT.CREATE) return null;
+
+  const author = toUser(sql.get(`SELECT * FROM users WHERE id = ?`, [signal.authorId]));
+  if (!author || author.role !== ROLE.CONTRACTOR) return null;
+  if (!author.email || author.notify?.enabled === false) return null;
+  return author;
 }
 
 /**
@@ -51,19 +92,23 @@ function recipients() {
 export function notifySignalEvent(event, signal, actor) {
   if (!event) return { sent: 0, recipients: [] };
 
-  const people = recipients();
-  if (!people.length) return { sent: 0, recipients: [] };
-
-  const message = signalNotificationEmail({ event, signal, actor, url: signalUrl(signal.id) });
+  const staff = staffRecipients(event);
+  const author = contractorRecipient(signal, event);
+  if (!staff.length && !author) return { sent: 0, recipients: [] };
 
   // Рассылка не должна задерживать HTTP-ответ: отправляем в фоне,
   // ошибки доставки фиксируются в mail_log, а не роняют операцию.
-  for (const person of people) {
+  const deliver = (person, url, audience) => {
+    const message = signalNotificationEmail({ event, signal, actor, url, audience });
     sendMail({ ...message, to: person.email, kind: `signal:${event}`, entityId: signal.id }).catch((error) =>
       console.error('[notifier] сбой отправки', error),
     );
-  }
+  };
 
-  console.info(`[notifier] событие ${event} по сигналу ${signal.id} → ${people.length} получателей`);
-  return { sent: people.length, recipients: people.map((person) => person.email) };
+  for (const person of staff) deliver(person, signalUrl(signal.id), 'staff');
+  if (author) deliver(author, contractorSignalUrl(signal.id), 'contractor');
+
+  const total = staff.length + (author ? 1 : 0);
+  console.info(`[notifier] событие ${event} по сигналу ${signal.id} → ${total} получателей`);
+  return { sent: total, recipients: [...staff.map((person) => person.email), ...(author ? [author.email] : [])] };
 }

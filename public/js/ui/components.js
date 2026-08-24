@@ -13,7 +13,7 @@ import {
   formatBytes,
   formatShortName,
 } from '/shared/constants.js';
-import { escalationDueAt, isActive } from '/shared/state-machine.js';
+import { escalationDueAt, isActive, isTerminal, resolutionMs } from '/shared/state-machine.js';
 import { validateFiles, acceptAttribute, limitsHint } from '../domain/files.js';
 
 export function statusBadge(status, { withHint = false } = {}) {
@@ -43,6 +43,46 @@ export function categoryTag(category) {
 function actorLabel(entry) {
   if (entry.byRole === ROLE.SYSTEM) return 'Система';
   return `${entry.byName} · ${(ROLE_LABEL[entry.byRole] ?? 'участник').toLowerCase()}`;
+}
+
+/* ------------------------------ время решения -------------------------------- */
+
+/**
+ * Время решения — главный числовой показатель карточки, поэтому он вынесен
+ * в отдельный крупный блок, а не спрятан в строку мелких подписей.
+ *
+ * У закрытого сигнала это итог, у активного — счетчик, который продолжает идти.
+ * Паузы (закрыт → возобновлен) в обоих случаях уже вычтены конечным автоматом.
+ */
+export function resolutionTimer(signal, { now = Date.now(), size = 'md' } = {}) {
+  const done = isTerminal(signal.status);
+  const paused = (signal.pausedMs ?? 0) > 0;
+
+  return html`<div class="timer timer--${size} ${done ? 'timer--done' : 'timer--running'}">
+    <span class="timer__icon" aria-hidden="true">◷</span>
+    <span class="timer__body">
+      <span class="timer__label">${done ? 'Время решения' : 'В работе уже'}</span>
+      <strong class="timer__value">${formatDuration(resolutionMs(signal, now))}</strong>
+    </span>
+    ${[paused ? html`<span class="timer__paused" title="Пауза за время закрытия вычтена">с паузой</span>` : '']}
+  </div>`;
+}
+
+/** Среднее время решения — «—», когда решать еще нечего. */
+export function formatAverage(ms) {
+  return ms === null || ms === undefined ? '—' : formatDuration(ms);
+}
+
+/* -------------------------- индикатор новых изменений ------------------------- */
+
+/**
+ * Синий кружок с числом изменений, случившихся с прошлого открытия карточки.
+ * Нулевого индикатора не бывает: если нового нет, кружок не рисуется вовсе.
+ */
+export function unreadBadge(count) {
+  if (!count) return '';
+  const label = `Новых изменений с последнего просмотра: ${count}`;
+  return html`<span class="unread" title="${label}" aria-label="${label}">${count > 99 ? '99+' : count}</span>`;
 }
 
 /** Таймер до автоэскалации либо отметка о её просрочке. */
@@ -178,13 +218,15 @@ export function bindFileField(root) {
 
 /* ---------------------------------- карточки --------------------------------- */
 
-export function signalCard(signal, { href, now = Date.now() } = {}) {
-  return html`<a class="card card--${signal.status}" href="${href}">
+export function signalCard(signal, { href, now = Date.now(), unread = 0 } = {}) {
+  return html`<a class="card card--${signal.status} ${unread ? 'has-unread' : ''}" href="${href}">
     <div class="card__head">
       ${[statusBadge(signal.status)]} ${[categoryTag(signal.category)]} ${[attachmentsBadge(signal.attachments)]}
+      ${[unreadBadge(unread)]}
     </div>
     <h3 class="card__title">${signal.contractorName}</h3>
     <p class="card__sector">Сектор: ${signal.sector}</p>
+    ${[resolutionTimer(signal, { now, size: 'sm' })]}
     <p class="card__desc">${truncate(signal.description, 120)}</p>
     <div class="card__foot">
       ${[assigneeChip(signal)]}
@@ -347,11 +389,29 @@ export function toggle({ name, label, hint = '', checked, disabled = false }) {
   </label>`;
 }
 
-export function checkbox({ name, label, checked, disabled = false, value }) {
+export function checkbox({ name, label, hint = '', checked, disabled = false, value }) {
   return html`<label class="checkbox ${disabled ? 'is-disabled' : ''}">
     <input type="checkbox" name="${name}" ${[value !== undefined ? `value="${escapeHtml(value)}"` : '']}
       ${[checked ? 'checked' : '']} ${[disabled ? 'disabled' : '']} />
     <span class="checkbox__box"></span>
-    <span class="checkbox__label">${label}</span>
+    <span class="checkbox__body">
+      <span class="checkbox__label">${label}</span>
+      ${[hint ? html`<span class="checkbox__hint">${hint}</span>` : '']}
+    </span>
   </label>`;
+}
+
+/** Взаимоисключающий выбор — тип учетной записи, тема оформления и т. п. */
+export function radioGroup({ name, options, value, columns = false }) {
+  const items = options.map(
+    (option) => html`<label class="radio">
+      <input type="radio" name="${name}" value="${option.id}" ${[option.id === value ? 'checked' : '']} />
+      <span class="radio__box"></span>
+      <span class="radio__body">
+        <span class="radio__label">${option.label}</span>
+        ${[option.hint ? html`<span class="radio__hint">${option.hint}</span>` : '']}
+      </span>
+    </label>`,
+  );
+  return html`<div class="radios ${columns ? 'radios--column' : ''}">${items}</div>`;
 }

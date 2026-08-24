@@ -62,10 +62,7 @@ export const newSignalView = {
     return html`
       <section class="wizard">
         <h1 class="wizard__title">Опишите проблему</h1>
-        <p class="wizard__lead">
-          Сигнал получит статус «Новая проблема» и уйдет главному администратору на распределение
-          по категориям. Следить за ходом рассмотрения можно в разделе «Мои сигналы».
-        </p>
+        <p class="wizard__lead">Следить за ходом рассмотрения можно в разделе «Мои сигналы».</p>
 
         <form class="form" id="signal-form" novalidate>
           ${fields}
@@ -144,7 +141,7 @@ export const newSignalView = {
         submitted = true;
         resetDraft();
         attachments.clear();
-        showToast('Сигнал создан и получил статус «Новая проблема»', 'success');
+        showToast('Сигнал создан и отправлен на рассмотрение', 'success');
         navigate(`/my/${signal.id}`);
       } catch (error) {
         submitButton.disabled = false;

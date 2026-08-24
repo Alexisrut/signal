@@ -4,7 +4,7 @@
  * одинаковыми правилами, без риска разойтись.
  */
 
-import { EMAIL_REGEX } from './constants.js';
+import { ACCOUNT_TYPE_IDS, EMAIL_REGEX } from './constants.js';
 
 export function isBlank(value) {
   return String(value ?? '').trim().length === 0;
@@ -50,17 +50,22 @@ export function validateContractorInput({ companyName, fullName, email, password
   return { valid: Object.keys(errors).length === 0, errors };
 }
 
-/** Создание учетной записи администратора главным администратором. */
-export function validateAdminInput({ displayName, login, email, password, password2 }, { requirePassword = true } = {}) {
+/** Создание учетной записи сотрудника главным администратором. */
+export function validateAdminInput(
+  { displayName, login, email, password, password2, role },
+  { requirePassword = true } = {},
+) {
   const errors = {};
 
-  if (isBlank(displayName)) errors.displayName = 'Укажите ФИО администратора';
+  if (isBlank(displayName)) errors.displayName = 'Укажите ФИО сотрудника';
 
   if (isBlank(login)) errors.login = 'Укажите логин';
   else if (String(login).trim().length < 3) errors.login = 'Минимум 3 символа';
 
   if (isBlank(email)) errors.email = 'Укажите email';
   else if (!EMAIL_REGEX.test(String(email).trim())) errors.email = 'Некорректный формат email';
+
+  if (role !== undefined && !ACCOUNT_TYPE_IDS.includes(role)) errors.role = 'Выберите тип аккаунта';
 
   if (requirePassword) checkPassword(errors, password, password2);
 
@@ -71,5 +76,28 @@ export function validateLoginInput({ login, password }) {
   const errors = {};
   if (isBlank(login)) errors.login = 'Введите логин';
   if (isBlank(password)) errors.password = 'Введите пароль';
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+/** Смена пароля из раздела «Аккаунт»: старый пароль плюс новая пара. */
+export function validatePasswordChange({ currentPassword, password, password2 }) {
+  const errors = {};
+  if (isBlank(currentPassword)) errors.currentPassword = 'Введите текущий пароль';
+  checkPassword(errors, password, password2);
+  if (!errors.password && currentPassword === password) errors.password = 'Новый пароль совпадает с текущим';
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+/** Установка нового пароля по ссылке из письма — старый пароль неизвестен. */
+export function validatePasswordReset({ password, password2 }) {
+  const errors = {};
+  checkPassword(errors, password, password2);
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+/** Запрос восстановления: достаточно логина или почты. */
+export function validateForgotInput({ identifier }) {
+  const errors = {};
+  if (isBlank(identifier)) errors.identifier = 'Укажите логин или email';
   return { valid: Object.keys(errors).length === 0, errors };
 }

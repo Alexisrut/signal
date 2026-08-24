@@ -1,10 +1,21 @@
-/** Детальная карточка сигнала для администратора: просмотр, история, управление статусом. */
+/** Детальная карточка сигнала для сотрудника: просмотр, история, управление статусом. */
 
 import { html, formatDateTime } from '../../core/utils.js';
 import { STATUS, STATUS_META, ESCALATION_MS, CATEGORIES, categoryLabel } from '/shared/constants.js';
-import { canAssign, canEdit, canTransition, isActive, isAssignedTo } from '/shared/state-machine.js';
+import { canAssign, canAssignOthers, canEdit, canReopen, canTransition, isActive, isAssignedTo } from '/shared/state-machine.js';
 import { currentActor, isSuperadmin } from '../../domain/session.js';
-import { findAny, authorLabel, changeStatus, ageSignal, setAssignee, distribute } from '../../domain/signals.js';
+import {
+  findAny,
+  authorLabel,
+  changeStatus,
+  reopenSignal,
+  ageSignal,
+  setAssignee,
+  assignPeople,
+  distribute,
+  markSeen,
+  unreadCount,
+} from '../../domain/signals.js';
 import {
   statusBadge,
   categoryTag,
@@ -15,7 +26,9 @@ import {
   attachmentsList,
   assigneeChip,
   assigneeRoster,
+  resolutionTimer,
 } from '../components.js';
+import { openAssignDialog } from '../assign-dialog.js';
 import { showToast } from '../chrome.js';
 
 export const adminSignalView = {
@@ -44,6 +57,7 @@ export const adminSignalView = {
     const takeVerdict = canAssign(signal, actor);
     const mine = isAssignedTo(signal, actor.id);
     const active = isActive(signal.status);
+    const reopenVerdict = canReopen(signal, actor);
 
     const actions = active
       ? html`
@@ -70,9 +84,18 @@ export const adminSignalView = {
               : '',
           ]}
         `
-      : html`<span class="detail__note">
-          Статус «${STATUS_META[signal.status].short}» терминальный — дальнейшие изменения запрещены.
-        </span>`;
+      : html`
+          ${[
+            reopenVerdict.allowed
+              ? html`<button class="btn btn--primary" data-action="reopen"
+                  title="Вернуть сигнал в работу — отсчет времени решения продолжится">
+                  Возобновить работу
+                </button>`
+              : html`<span class="detail__note">
+                  Статус «${STATUS_META[signal.status].short}» закрыт. ${reopenVerdict.reason}.
+                </span>`,
+          ]}
+        `;
 
     return html`
       <section class="page">
@@ -95,14 +118,30 @@ export const adminSignalView = {
             <p class="detail__subtitle">Сектор: ${signal.sector}</p>
           </header>
 
+          <div class="detail__timer">${[resolutionTimer(signal, { now, size: 'lg' })]}</div>
+
           <dl class="detail__facts">
             <div><dt>Автор</dt><dd>${authorLabel(signal.id)}</dd></div>
             <div><dt>Категория</dt><dd>${categoryLabel(signal.category)}</dd></div>
             <div><dt>Создан</dt><dd>${formatDateTime(signal.createdAt)}</dd></div>
             <div><dt>Обновлен</dt><dd>${formatDateTime(signal.updatedAt)}</dd></div>
+            ${[
+              signal.closedAt
+                ? html`<div><dt>Закрыт</dt><dd>${formatDateTime(signal.closedAt)}</dd></div>`
+                : '',
+            ]}
             <div><dt>Возраст</dt><dd>${ageLabel(signal, now)}</dd></div>
             <div><dt>ID</dt><dd class="mono">${signal.id}</dd></div>
           </dl>
+
+          ${[
+            signal.assignmentNote
+              ? html`<div class="note-card">
+                  <span class="note-card__label">Заметка к распределению</span>
+                  <p class="note-card__text">${signal.assignmentNote}</p>
+                </div>`
+              : '',
+          ]}
 
           ${[
             isSuperadmin(actor)
@@ -127,7 +166,16 @@ export const adminSignalView = {
           ]}
 
           <div class="detail__section">
-            <h2>Исполнители (${signal.assignees.length})</h2>
+            <div class="detail__section-head">
+              <h2>Исполнители (${signal.assignees.length})</h2>
+              ${[
+                canAssignOthers(signal, actor).allowed
+                  ? html`<button class="btn btn--secondary btn--sm" data-action="assign-people">
+                      Назначить руководителей
+                    </button>`
+                  : '',
+              ]}
+            </div>
             ${[assigneeRoster(signal, { removable: true })]}
           </div>
 
@@ -178,6 +226,9 @@ export const adminSignalView = {
   },
 
   mount(root, ctx) {
+    // Открытие карточки — это и есть «прочитано»: индикатор новых изменений гаснет.
+    if (unreadCount(ctx.params.id)) markSeen(ctx.params.id).catch(() => {});
+
     root.querySelectorAll('[data-assign]').forEach((button) => {
       button.addEventListener('click', async () => {
         button.disabled = true;
@@ -203,6 +254,25 @@ export const adminSignalView = {
           showToast(error.message, 'error');
         }
       });
+    });
+
+    root.querySelector('[data-action="assign-people"]')?.addEventListener('click', async (event) => {
+      // currentTarget обнуляется после всплытия события, поэтому кнопку
+      // запоминаем до открытия окна — оно ждет ответа пользователя.
+      const button = event.currentTarget;
+      const signal = findAny(ctx.params.id);
+      const picked = await openAssignDialog({ signal, category: signal?.category });
+      if (!picked) return;
+
+      button.disabled = true;
+
+      try {
+        const updated = await assignPeople(ctx.params.id, picked.assignees, picked.note);
+        showToast(`Исполнителей по сигналу: ${updated.assignees.length}`, 'success');
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message, 'error');
+      }
     });
 
     // Распределение доступно только главному администратору — кнопки рисуются под его ролью.
@@ -231,6 +301,18 @@ export const adminSignalView = {
           showToast(error.message, 'error');
         }
       });
+    });
+
+    root.querySelector('[data-action="reopen"]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      try {
+        const signal = await reopenSignal(ctx.params.id);
+        showToast(`Сигнал возобновлен: ${STATUS_META[signal.status].label}`, 'success');
+      } catch (error) {
+        button.disabled = false;
+        showToast(error.message, 'error');
+      }
     });
 
     root.querySelector('[data-age]')?.addEventListener('click', async (event) => {
