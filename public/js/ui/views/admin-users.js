@@ -42,8 +42,11 @@ export const adminUsersView = {
 
     // data-label подставляется в псевдоэлемент только в мобильной раскладке,
     // где таблица превращается в карточки; на десктопе атрибут ни на что не влияет.
+    // data-search держит все, по чему ищут: имя, логин, почту.
+    const searchKey = (...parts) => parts.filter(Boolean).join(' ').toLowerCase();
+
     const staffRows = staff.map(
-      (user) => html`<tr>
+      (user) => html`<tr data-search="${searchKey(user.displayName, user.login, user.email)}">
         <td data-label="Имя">
           <strong>${user.displayName}</strong>
           ${[user.id === actor.id ? html`<span class="tag tag--self">это вы</span>` : '']}
@@ -71,7 +74,7 @@ export const adminUsersView = {
     );
 
     const contractorRows = contractors.map(
-      (user) => html`<tr>
+      (user) => html`<tr data-search="${searchKey(user.companyName, user.login, user.fullName, user.email)}">
         <td data-label="Компания"><strong>${user.companyName ?? user.login}</strong></td>
         <td data-label="ФИО">${user.fullName ?? '—'}</td>
         <td class="mono" data-label="Email">${user.email}</td>
@@ -109,6 +112,10 @@ export const adminUsersView = {
         <div class="split">
           <div class="panel">
             <h2 class="panel__title">Сотрудники (${staff.length})</h2>
+            <label class="field field--search">
+              <input class="field__control" type="search" data-search-for="staff"
+                placeholder="Поиск по ФИО, логину или почте" autocomplete="off" />
+            </label>
             <div class="table-wrap">
               <table class="table">
                 <thead>
@@ -143,6 +150,14 @@ export const adminUsersView = {
 
         <div class="panel">
           <h2 class="panel__title">Подрядчики (${contractors.length})</h2>
+          ${[
+            contractors.length
+              ? html`<label class="field field--search">
+                  <input class="field__control" type="search" data-search-for="contractors"
+                    placeholder="Поиск по названию или ФИО" autocomplete="off" />
+                </label>`
+              : '',
+          ]}
           ${[
             contractors.length
               ? html`<div class="table-wrap">
@@ -237,6 +252,8 @@ export const adminUsersView = {
       }
     });
 
+    bindTableSearch(root);
+
     // Правка набора категорий у существующей учетной записи — прямо в строке таблицы.
     root.querySelectorAll('[data-edit]').forEach((button) => {
       button.addEventListener('click', () => openCategoryEditor(button, ctx));
@@ -318,5 +335,29 @@ function openCategoryEditor(button, ctx) {
       save.disabled = false;
       showToast(error.message, 'error');
     }
+  });
+}
+
+/**
+ * Фильтрация таблиц по строке поиска. Строка-редактор категорий, если она
+ * раскрыта под учетной записью, прячется вместе со своей строкой — иначе
+ * она повисла бы в списке сама по себе.
+ */
+function bindTableSearch(root) {
+  root.querySelectorAll('[data-search-for]').forEach((input) => {
+    const table = input.closest('.panel').querySelector('.table');
+    if (!table) return;
+
+    input.addEventListener('input', () => {
+      const query = input.value.trim().toLowerCase();
+
+      for (const row of table.tBodies[0].rows) {
+        if (row.classList.contains('table__editor')) {
+          row.hidden = row.previousElementSibling?.hidden ?? false;
+          continue;
+        }
+        row.hidden = Boolean(query) && !(row.dataset.search ?? '').includes(query);
+      }
+    });
   });
 }

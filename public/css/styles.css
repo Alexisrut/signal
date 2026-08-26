@@ -145,10 +145,10 @@ code, .mono {
 .topbar__inner {
   max-width: 1240px;
   margin: 0 auto;
-  padding: 12px 24px;
+  padding: 7px 24px;
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 18px;
   flex-wrap: wrap;
 }
 
@@ -159,22 +159,18 @@ code, .mono {
 }
 
 .brand__mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
   background: conic-gradient(from 200deg, var(--yellow), var(--red), var(--green), var(--yellow));
-  box-shadow: inset 0 0 0 5px var(--bg);
+  box-shadow: inset 0 0 0 4px var(--bg);
+  flex: none;
 }
 
 .brand__text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.2;
-}
-
-.brand__text small {
-  color: var(--muted);
-  font-size: 11.5px;
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .nav {
@@ -188,7 +184,7 @@ code, .mono {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 7px 13px;
+  padding: 6px 12px;
   border-radius: 999px;
   color: var(--muted);
   font-size: 14px;
@@ -223,18 +219,26 @@ code, .mono {
   gap: 12px;
 }
 
+/*
+ * Имя пользователя стоит в одну строку с меню и должностью: две строки
+ * в шапке съедали высоту ради информации, которая читается и в строку.
+ */
 .who {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  line-height: 1.25;
+  align-items: baseline;
+  gap: 7px;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .who__role {
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11.5px;
   color: var(--muted);
+}
+
+.who__role::before {
+  content: '·';
+  margin-right: 7px;
 }
 
 .who--admin .who__role {
@@ -244,6 +248,39 @@ code, .mono {
 .who__name {
   font-size: 13.5px;
   font-weight: 600;
+}
+
+/* Поле поиска над таблицей и в окне выбора — без верхнего отступа блока формы. */
+.field--search {
+  margin-bottom: 14px;
+}
+
+.field--search .field__control {
+  padding: 9px 13px;
+}
+
+/* Имя автора в форме создания: это подпись, а не поле ввода. */
+.author-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.author-note__label {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.picker__row[hidden] {
+  display: none;
 }
 
 /* -------------------------------- каркас ---------------------------------- */
@@ -653,20 +690,7 @@ code, .mono {
   margin-top: -8px;
 }
 
-.auth__demo {
-  color: var(--muted);
-  font-size: 13px;
-  text-align: center;
-  border-top: 1px dashed var(--border);
-  padding-top: 14px;
-}
 
-.auth__demo code {
-  color: var(--text);
-  background: var(--panel-2);
-  padding: 2px 6px;
-  border-radius: 6px;
-}
 
 /* -------------------------------- бейджи ---------------------------------- */
 
@@ -1143,29 +1167,8 @@ code, .mono {
   margin-top: -12px;
 }
 
-.devtool {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 12px 14px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-soft);
-}
 
-.devtool__label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent);
-  font-weight: 700;
-}
 
-.devtool small {
-  color: var(--muted);
-  font-size: 12px;
-}
 
 /* -------------------------------- история --------------------------------- */
 
@@ -1771,14 +1774,36 @@ code, .mono {
 
 /* Меню администратора длиннее подрядчицкого — на средних экранах ужимаем шапку,
    чтобы она оставалась в одну строку. */
+/*
+ * Меню из шести пунктов плюс имя пользователя должны уместиться в одну строку.
+ * По мере сужения экрана из шапки уходит то, без чего можно обойтись:
+ * сначала должность (она остается в подсказке), затем название системы —
+ * логотип-ссылка на главную никуда не девается.
+ */
 @media (max-width: 1500px) {
   .nav__link {
     padding: 6px 10px;
     font-size: 13.5px;
   }
 
-  .brand__text small {
+  .who__role {
     display: none;
+  }
+}
+
+@media (max-width: 1150px) {
+  .brand__text {
+    display: none;
+  }
+}
+
+/*
+ * Ниже 900px меню уезжает под бургер и место в строке освобождается —
+ * название системы возвращается рядом с логотипом.
+ */
+@media (max-width: 900px) {
+  .brand__text {
+    display: block;
   }
 }
 
@@ -2136,14 +2161,6 @@ button.link {
     width: 100%;
   }
 
-  .devtool {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .devtool .btn {
-    width: 100%;
-  }
 
   .history {
     padding-left: 20px;

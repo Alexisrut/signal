@@ -33,6 +33,7 @@ import {
   ESCALATION_MS,
   HISTORY_KIND,
   NOTIFICATION_EVENT,
+  isAdminRole,
   isStaffRole,
 } from './constants.js';
 
@@ -227,20 +228,41 @@ export function canAssign(signal, actor) {
 }
 
 /**
- * Назначить на сигнал других людей (раздел «Распределение» и карточка сигнала).
- * Это не «принять в работу себя», а именно раздача задачи руководителям.
+ * Назначить на сигнал кураторов (раздел «Распределение» и карточка сигнала).
+ * Это не «принять в работу себя», а раздача задачи руководителям, и занимаются
+ * ею только администраторы: руководитель ведет свои задачи, но не раздает чужие.
  */
 export function canAssignOthers(signal, actor) {
   if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
-  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Назначать исполнителей может только сотрудник платформы' };
+  if (!isAdminRole(actor?.role)) {
+    return { allowed: false, reason: 'Назначать кураторов может только администратор' };
+  }
   if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт — сначала возобновите его' };
   return { allowed: true };
 }
 
-/** Снять исполнителя — себя или коллегу — может любой сотрудник платформы. */
+/**
+ * Может ли этот человек стать куратором сигнала.
+ * Куратор — всегда руководитель, и только тот, за кем закреплена категория
+ * сигнала: раздавать задачи «мимо специализации» система не дает.
+ */
+export function canCurate(user, category) {
+  if (user?.role !== ROLE.MANAGER) return false;
+  if (!category) return false; // нераспределенный сигнал курировать некому
+  return (user.categories ?? []).includes(category);
+}
+
+/**
+ * Снять исполнителя. Себя снимает любой сотрудник, коллегу — только
+ * администратор: состав кураторов — часть распределения, а его руководитель
+ * не ведет.
+ */
 export function canRelease(signal, actor, userId = actor?.id) {
   if (!assignees(signal).length) return { allowed: false, reason: 'Сигнал никем не принят' };
   if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Доступно только сотруднику платформы' };
+  if (userId !== actor?.id && !isAdminRole(actor?.role)) {
+    return { allowed: false, reason: 'Снимать других исполнителей может только администратор' };
+  }
   if (!isAssignedTo(signal, userId)) return { allowed: false, reason: 'Этот исполнитель не в работе по сигналу' };
   return { allowed: true };
 }

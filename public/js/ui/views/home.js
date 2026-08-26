@@ -35,8 +35,11 @@ export const homeView = {
       `;
     } else if (isStaff(actor)) {
       const waiting = (listUndistributed() ?? []).length;
+      // Сотрудник тоже заводит проблемы, и кнопка нужна ему на видном месте:
+      // администратор и руководитель сталкиваются с ними на объекте не реже.
       actions = html`
-        <a class="btn btn--primary btn--lg" href="#/admin">Открыть дашборд</a>
+        <a class="btn btn--primary btn--lg" href="#/new">Сообщить о проблеме</a>
+        <a class="btn btn--secondary btn--lg" href="#/admin">Открыть дашборд</a>
         ${[
           isSuperadmin(actor)
             ? html`<a class="btn btn--secondary btn--lg" href="#/admin/distribution"

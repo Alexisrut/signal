@@ -1,10 +1,10 @@
 /** Шапка приложения, глобальные баннеры и всплывающие уведомления. */
 
 import { html } from '../core/utils.js';
-import { ROLE_LABEL, STATUS, THEME } from '/shared/constants.js';
+import { ROLE, ROLE_LABEL, STATUS, THEME, formatShortName } from '/shared/constants.js';
 import { currentTheme, onThemeChange, toggleTheme } from '../core/theme.js';
 import * as store from '../data/store.js';
-import { currentActor, isAdmin, isAuthenticated, isContractor, isStaff, isSuperadmin, logout } from '../domain/session.js';
+import { currentActor, hasSignalsTab, isAdmin, isAuthenticated, isStaff, isSuperadmin, logout } from '../domain/session.js';
 import { listMine, listAll, listUndistributed } from '../domain/signals.js';
 import { navigate } from './router.js';
 
@@ -74,6 +74,11 @@ function bindMenu(host) {
   applyMenuState();
 }
 
+/** Подпись пользователя в шапке: ФИО сокращаем, название компании — нет. */
+function headerName(actor) {
+  return actor.role === ROLE.CONTRACTOR ? actor.displayName : formatShortName(actor.displayName);
+}
+
 /** Переключатель темы доступен всем, включая гостя на форме входа. */
 function themeButton() {
   const dark = currentTheme() === THEME.DARK;
@@ -98,11 +103,11 @@ export function renderHeader(currentPath = '/') {
   const actor = currentActor();
   const state = store.getState();
 
-  // «Аккаунт» стоит первым пунктом — левее «Главной».
-  const links = isAuthenticated(actor) ? [navLink('#/account', 'Аккаунт', currentPath)] : [];
-  links.push(navLink('#/', 'Главная', currentPath));
+  // Порядок пунктов: Главная → Мои сигналы → Дашборд → Распределение →
+  // Учетные записи → Аккаунт. «Аккаунт» замыкает меню как личный раздел.
+  const links = [navLink('#/', 'Главная', currentPath)];
 
-  if (isContractor(actor)) {
+  if (hasSignalsTab(actor)) {
     const activeMine = listMine().filter(isActiveStatus).length;
     links.push(navLink('#/my', 'Мои сигналы', currentPath, activeMine || ''));
   }
@@ -118,14 +123,13 @@ export function renderHeader(currentPath = '/') {
     }
   }
 
+  if (isAuthenticated(actor)) links.push(navLink('#/account', 'Аккаунт', currentPath));
+
   host.innerHTML = html`
     <div class="topbar__inner">
       <a class="brand" href="#/">
         <span class="brand__mark"></span>
-        <span class="brand__text">
-          <strong>Мониторинг сигналов</strong>
-          <small>Система контроля проблем подрядчиков</small>
-        </span>
+        <span class="brand__text">Мониторинг сигналов</span>
       </a>
 
       <button class="burger" type="button" data-action="menu" aria-label="Меню" aria-expanded="false" aria-controls="main-nav">
@@ -139,9 +143,13 @@ export function renderHeader(currentPath = '/') {
         ${[themeButton()]}
         ${[
           isAuthenticated(actor)
-            ? html`<span class="who who--${actor.role}">
+            ? // ФИО сокращается до «Фамилия И.О.», чтобы в строку с меню
+              // помещались и имя, и должность; полное — в подсказке.
+              // Название компании не сокращаем: «ООО Т.» ничего не значит.
+              html`<span class="who who--${actor.role}"
+                  title="${actor.displayName} · ${ROLE_LABEL[actor.role] ?? 'Пользователь'}">
+                  <span class="who__name">${headerName(actor)}</span>
                   <span class="who__role">${ROLE_LABEL[actor.role] ?? 'Пользователь'}</span>
-                  <span class="who__name">${actor.displayName}</span>
                 </span>
                 <button class="btn btn--ghost btn--sm" data-action="logout">Выйти</button>`
             : html`<a class="btn btn--ghost btn--sm" href="#/login">Войти</a>

@@ -6,8 +6,7 @@
  */
 
 import { html, isBlank } from '../../core/utils.js';
-import { DEFAULT_ADMIN, ROLE, isStaffRole } from '/shared/constants.js';
-import * as store from '../../data/store.js';
+import { ROLE, isStaffRole } from '/shared/constants.js';
 import { login } from '../../domain/session.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
@@ -24,9 +23,6 @@ export const loginView = {
   live: false,
 
   render() {
-    // Подсказка живет ровно до тех пор, пока цела учетная запись по умолчанию.
-    const hasDefault = store.getState().meta?.defaultAdminPresent === true;
-
     return html`
       <section class="auth">
         <h1 class="auth__title">Вход в систему</h1>
@@ -58,14 +54,6 @@ export const loginView = {
           <p class="auth__aside"><a class="link" href="#/forgot">Забыли пароль?</a></p>
         </form>
 
-        ${[
-          hasDefault
-            ? html`<p class="auth__demo">
-                Демо-доступ главного администратора: <code>${DEFAULT_ADMIN.login}</code> /
-                <code>${DEFAULT_ADMIN.password}</code>
-              </p>`
-            : '',
-        ]}
       </section>
     `;
   },

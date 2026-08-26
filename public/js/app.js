@@ -31,11 +31,18 @@ function requireAuth() {
   return isAuthenticated() ? null : '/login';
 }
 
-/** Сигналы создает и ведет подрядчик. */
+/** Карточку в разделе «Мои сигналы» ведет только подрядчик. */
 function requireContractor() {
   const redirect = requireAuth();
   if (redirect) return redirect;
   return isContractor() ? null : '/admin';
+}
+
+/** Сообщить о проблеме может любой участник системы — и подрядчик, и сотрудник. */
+function requireReporter() {
+  const redirect = requireAuth();
+  if (redirect) return redirect;
+  return isContractor() || isStaff() ? null : '/';
 }
 
 /**
@@ -78,8 +85,10 @@ const routes = [
 
   { path: '/account', view: accountView, guard: requireAuth },
 
-  { path: '/new', view: newSignalView, guard: requireContractor },
-  { path: '/my', view: mySignalsView, guard: requireContractor },
+  { path: '/new', view: newSignalView, guard: requireReporter },
+  // «Мои сигналы» есть у всех: у подрядчика это его обращения,
+  // у сотрудника — задачи, за которые он отвечает.
+  { path: '/my', view: mySignalsView, guard: requireAuth },
   { path: '/my/:id', view: mySignalView, guard: requireContractor },
   { path: '/my/:id/edit', view: editSignalView, guard: requireContractor },
 
@@ -150,7 +159,13 @@ async function bootstrap() {
 
 function accessKey() {
   const actor = store.getState().actor;
-  return [actor?.id, actor?.role, actor?.isEmailVerified, (actor?.categories ?? []).join(',')].join('|');
+  return [
+    actor?.id,
+    actor?.role,
+    actor?.isEmailVerified,
+    actor?.hasOwnSignals,
+    (actor?.categories ?? []).join(','),
+  ].join('|');
 }
 
 bootstrap().catch((error) => {

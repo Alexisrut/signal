@@ -59,6 +59,13 @@ sql.exec(`
     is_email_verified INTEGER NOT NULL DEFAULT 0,
     categories        TEXT,
     notify            TEXT,
+    /*
+     * Был ли у пользователя хоть один свой сигнал — созданный им или
+     * назначенный на него. Флаг «залипающий»: вкладка «Мои сигналы»
+     * появляется с первым сигналом и больше не пропадает, даже если
+     * человека потом сняли со всех задач.
+     */
+    has_own_signals   INTEGER NOT NULL DEFAULT 0,
     created_at        INTEGER NOT NULL,
     created_by        TEXT
   );
@@ -205,6 +212,13 @@ function migrate() {
     addColumn('users', column, definition);
   }
 
+  // Залипающий признак «свои сигналы были»: на старой базе выводим его
+  // из уже существующих авторств и назначений.
+  if (addColumn('users', 'has_own_signals', 'INTEGER NOT NULL DEFAULT 0')) {
+    sql.run(`UPDATE users SET has_own_signals = 1 WHERE id IN (SELECT DISTINCT author_id FROM signals)`);
+    sql.run(`UPDATE users SET has_own_signals = 1 WHERE id IN (SELECT DISTINCT user_id FROM assignments)`);
+  }
+
   addColumn('signals', 'distributed_at', 'INTEGER');
   addColumn('signals', 'category', 'TEXT');
   addColumn('signals', 'assignment_note', 'TEXT');
@@ -267,8 +281,8 @@ export function seedDefaultAdmin() {
 
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, password_salt, password_hash,
-                        is_email_verified, categories, notify, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'system')`,
+                        is_email_verified, categories, notify, has_own_signals, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, 'system')`,
     [
       admin.id,
       ROLE.SUPERADMIN,

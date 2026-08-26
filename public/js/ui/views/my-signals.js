@@ -1,13 +1,19 @@
 /**
- * Личный кабинет подрядчика (и «мои сигналы» администратора).
- * Изолированная среда: сервер отдает в mySignals только сигналы текущего автора.
+ * Раздел «Мои сигналы» — личный список, разный по смыслу для двух ролей.
+ *
+ * У подрядчика это его собственные обращения: сервер отдает в mySignals только
+ * сигналы, где он автор. У руководителя и администратора — задачи, за которые
+ * он лично отвечает как исполнитель.
+ *
+ * Подрядчику внутренняя кухня не показывается: ни «не распределен», ни
+ * «не принят», ни лента действий — только статус его проблемы и её движение.
  */
 
 import { html, formatDateTime, truncate } from '../../core/utils.js';
 import { STATUS, STATUS_META, STATUS_ORDER, categoryLabel } from '/shared/constants.js';
 import { canEdit, canTransition } from '/shared/state-machine.js';
-import { currentActor } from '../../domain/session.js';
-import { listMine, findMine, changeStatus, countByStatus } from '../../domain/signals.js';
+import { currentActor, isContractor } from '../../domain/session.js';
+import { listMine, findMine, changeStatus, countByStatus, unreadCount } from '../../domain/signals.js';
 import {
   statusBadge,
   categoryTag,
@@ -19,13 +25,14 @@ import {
   attachmentsBadge,
   assigneeChip,
   resolutionTimer,
+  unreadBadge,
 } from '../components.js';
 import { showToast } from '../chrome.js';
 
 /**
  * Сводка подрядчика: сколько обращений он подал за все время и сколько
  * из них решено. Считается только по его собственным сигналам — других
- * в mySignals не бывает по построению.
+ * в mySignals у подрядчика не бывает по построению.
  */
 function contractorStats(signals) {
   const resolved = signals.filter((signal) => signal.status === STATUS.GREEN).length;
@@ -69,34 +76,46 @@ export const mySignalsView = {
 
   render() {
     const actor = currentActor();
+    const mine = isContractor(actor);
     const signals = listMine();
     const counters = countByStatus(signals);
     const now = Date.now();
+
+    const empty = mine
+      ? emptyState(
+          'Пока ни одного сигнала',
+          'Здесь появится история ваших обращений и их текущие статусы.',
+          html`<a class="btn btn--primary" href="#/new">Задать проблему</a>`,
+        )
+      : emptyState(
+          'На вас пока не назначено ни одной задачи',
+          'Сигнал появится здесь, как только администратор назначит вас ответственным.',
+          html`<a class="btn btn--secondary" href="#/admin">К карте сигналов</a>`,
+        );
 
     if (!signals.length) {
       return html`
         <section class="page">
           <header class="page__head"><h1 class="page__title">Мои сигналы</h1></header>
-          ${[contractorStats(signals)]}
-          ${[
-            emptyState(
-              'Пока ни одного сигнала',
-              'Здесь появится история ваших обращений и их текущие статусы.',
-              html`<a class="btn btn--primary" href="#/new">Задать проблему</a>`,
-            ),
-          ]}
+          ${[mine ? contractorStats(signals) : '']}
+          ${[empty]}
         </section>
       `;
     }
 
     const rows = signals.map((signal) => {
       const canResolve = canTransition(signal, STATUS.GREEN, actor).allowed;
+      // Подрядчик ведет карточку в своем разделе, ответственный — в рабочей.
+      const href = mine ? `#/my/${signal.id}` : `#/admin/signal/${signal.id}`;
+
       return html`<article class="row row--${signal.status}">
         <div class="row__main">
           <div class="row__head">
-            ${[statusBadge(signal.status, { withHint: true })]} ${[categoryTag(signal.category)]}
-            ${[assigneeChip(signal)]} ${[attachmentsBadge(signal.attachments)]}
+            ${[statusBadge(signal.status, { withHint: true })]}
+            ${[categoryTag(signal.category, { hideUndistributed: mine })]}
+            ${[assigneeChip(signal, { hideFree: mine })]} ${[attachmentsBadge(signal.attachments)]}
             <span class="row__age">Возраст: ${ageLabel(signal, now)}</span>
+            ${[mine ? '' : unreadBadge(unreadCount(signal.id))]}
           </div>
           <h3 class="row__title">${signal.contractorName} · ${signal.sector}</h3>
           ${[resolutionTimer(signal, { now })]}
@@ -108,9 +127,9 @@ export const mySignalsView = {
           </div>
         </div>
         <div class="row__actions">
-          <a class="btn btn--ghost btn--sm" href="#/my/${signal.id}">Подробнее</a>
+          <a class="btn btn--ghost btn--sm" href="${href}">Подробнее</a>
           ${[
-            canEdit(signal, actor).allowed
+            mine && canEdit(signal, actor).allowed
               ? html`<a class="btn btn--ghost btn--sm" href="#/my/${signal.id}/edit">Изменить</a>`
               : '',
           ]}
@@ -133,11 +152,13 @@ export const mySignalsView = {
         <header class="page__head">
           <div>
             <h1 class="page__title">Мои сигналы</h1>
-            <p class="page__lead">Вы видите только собственные сигналы.</p>
+            <p class="page__lead">
+              ${mine ? 'Вы видите только собственные сигналы.' : 'Задачи, за которые вы отвечаете.'}
+            </p>
           </div>
-          <a class="btn btn--primary" href="#/new">Задать проблему</a>
+          ${[mine ? html`<a class="btn btn--primary" href="#/new">Задать проблему</a>` : '']}
         </header>
-        ${[contractorStats(signals)]}
+        ${[mine ? contractorStats(signals) : '']}
         <div class="chips">${chips}</div>
         <div class="rows">${rows}</div>
       </section>
@@ -157,6 +178,7 @@ export const mySignalView = {
   render(ctx) {
     const actor = currentActor();
     const signal = findMine(ctx.params.id);
+    const mine = isContractor(actor);
 
     if (!signal) {
       return html`
@@ -174,6 +196,7 @@ export const mySignalView = {
 
     const canResolve = canTransition(signal, STATUS.GREEN, actor).allowed;
     const now = Date.now();
+    const assignees = signal.assignees.map((person) => person.name).join(', ');
 
     return html`
       <section class="page">
@@ -189,19 +212,24 @@ export const mySignalView = {
         <article class="detail detail--${signal.status}">
           <header class="detail__head">
             <div class="detail__badges">
-              ${[statusBadge(signal.status, { withHint: true })]} ${[categoryTag(signal.category)]}
-              ${[assigneeChip(signal, { compact: false })]}
+              ${[statusBadge(signal.status, { withHint: true })]}
+              ${[categoryTag(signal.category, { hideUndistributed: mine })]}
+              ${[assigneeChip(signal, { compact: false, hideFree: mine })]}
             </div>
             <h1 class="detail__title">${signal.contractorName}</h1>
             <p class="detail__subtitle">Сектор: ${signal.sector}</p>
           </header>
 
           <dl class="detail__facts">
-            <div>
-              <dt>Исполнители</dt>
-              <dd>${signal.assignees.map((person) => person.name).join(', ') || 'никто не принял в работу'}</dd>
-            </div>
-            <div><dt>Категория</dt><dd>${categoryLabel(signal.category)}</dd></div>
+            ${[
+              // Пустые «не принят» и «не распределен» подрядчику не показываем.
+              assignees ? html`<div><dt>Исполнители</dt><dd>${assignees}</dd></div>` : '',
+            ]}
+            ${[
+              signal.category
+                ? html`<div><dt>Категория</dt><dd>${categoryLabel(signal.category)}</dd></div>`
+                : '',
+            ]}
             <div><dt>Создан</dt><dd>${formatDateTime(signal.createdAt)}</dd></div>
             <div><dt>Обновлен</dt><dd>${formatDateTime(signal.updatedAt)}</dd></div>
             <div><dt>Возраст</dt><dd>${ageLabel(signal, now)}</dd></div>
@@ -242,8 +270,8 @@ export const mySignalView = {
           </div>
 
           <div class="detail__section">
-            <h2>История событий</h2>
-            ${[historyList(signal.history)]}
+            <h2>История статусов</h2>
+            ${[historyList(signal.history, { statusOnly: mine })]}
           </div>
         </article>
       </section>

@@ -38,7 +38,6 @@ const routes = [
   ['POST', '/api/signals/:id/assign', api.assignSignal],
   ['POST', '/api/signals/:id/assignees', api.assignPeople],
   ['POST', '/api/signals/:id/seen', api.seenSignal],
-  ['POST', '/api/signals/:id/age', api.ageSignal],
   ['POST', '/api/signals/:id/category', api.distributeSignal],
 
   ['POST', '/api/auth/login', api.login],

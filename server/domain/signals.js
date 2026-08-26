@@ -30,6 +30,7 @@ import {
 import {
   canAssign,
   canAssignOthers,
+  canCurate,
   canDistribute,
   canEdit,
   canRelease,
@@ -139,6 +140,23 @@ export function listAll() {
 /** Изолированная выборка подрядчика: только собственные сигналы. */
 export function listByAuthor(authorId) {
   return hydrate(sql.all(`SELECT * FROM signals WHERE author_id = ? ORDER BY updated_at DESC`, [authorId]));
+}
+
+/**
+ * Задачи, за которые человек отвечает лично, — содержимое вкладки «Мои сигналы»
+ * у руководителя и администратора. Закрытые задачи из нее не исчезают:
+ * решенное остается в личном списке как история работы.
+ */
+export function listAssignedTo(userId) {
+  return hydrate(
+    sql.all(
+      `SELECT s.* FROM signals s
+         JOIN assignments a ON a.entity_id = s.id AND a.entity_type = ?
+        WHERE a.user_id = ?
+        ORDER BY s.updated_at DESC`,
+      [ASSIGNABLE.SIGNAL, userId],
+    ),
+  );
 }
 
 /** Нераспределенные сигналы — содержимое раздела «Распределение». */
@@ -261,8 +279,21 @@ export function queryForExport({ category = 'all', status = 'all', assignment = 
 
 /* --------------------------------- мутации ----------------------------------- */
 
+/**
+ * Имя, под которым сигнал попадает в систему.
+ *
+ * Форма его не спрашивает и не может подменить: у подрядчика это название его
+ * компании, у сотрудника — его собственное имя. Автора берем из сессии, а не
+ * из тела запроса, иначе подписаться чужим именем было бы делом одной правки
+ * в консоли браузера.
+ */
+function authorNameOf(actor) {
+  return actor.role === ROLE.CONTRACTOR ? (actor.companyName ?? actor.displayName) : actor.displayName;
+}
+
 export function createSignal(input, actor) {
-  const { valid, errors } = validateSignalInput(input);
+  const contractorName = authorNameOf(actor);
+  const { valid, errors } = validateSignalInput({ ...input, contractorName });
   if (!valid) {
     const error = badRequest('Форма заполнена не полностью');
     error.errors = errors;
@@ -281,7 +312,7 @@ export function createSignal(input, actor) {
         id,
         actor.id,
         actor.role,
-        String(input.contractorName).trim(),
+        contractorName,
         String(input.sector).trim(),
         String(input.description).trim(),
         STATUS.YELLOW,
@@ -289,6 +320,9 @@ export function createSignal(input, actor) {
         now,
       ],
     );
+
+    // Вкладка «Мои сигналы» у автора теперь есть навсегда.
+    sql.run(`UPDATE users SET has_own_signals = 1 WHERE id = ?`, [actor.id]);
 
     insertHistory(id, {
       kind: HISTORY_KIND.CREATE,
@@ -362,8 +396,11 @@ export function distribute(signalId, category, actor, { assignees: people = [], 
 }
 
 /**
- * Выдать задачу конкретным людям и приложить заметку.
- * Уже назначенные пропускаются, чужие идентификаторы игнорируются.
+ * Выдать задачу кураторам и приложить заметку.
+ *
+ * Куратором может стать только руководитель, за которым закреплена категория
+ * сигнала. Проверка живет здесь, а не только в окне выбора: список на клиенте
+ * подсказывает, а решает сервер.
  */
 export function assignPeople(signalId, userIds, actor, note = null) {
   const before = getById(signalId);
@@ -380,9 +417,16 @@ export function assignPeople(signalId, userIds, actor, note = null) {
   const text = raw && raw !== before.assignmentNote ? raw : null;
 
   const requested = [...new Set((Array.isArray(userIds) ? userIds : []).map(String))];
-  const people = requested.map((id) => findUser(id)).filter((user) => user && isStaffUser(user));
+  const people = requested.map((id) => findUser(id)).filter(Boolean);
 
-  if (requested.length && !people.length) throw badRequest('Ни один из выбранных сотрудников не найден');
+  const rejected = people.filter((person) => !canCurate(person, before.category));
+  if (rejected.length) {
+    throw badRequest(
+      `Куратором может быть только руководитель с категорией «${categoryLabel(before.category)}»: ` +
+        rejected.map((person) => person.displayName).join(', '),
+    );
+  }
+  if (requested.length && !people.length) throw badRequest('Ни один из выбранных руководителей не найден');
   if (!people.length && !text) return before;
 
   const now = Date.now();
@@ -390,7 +434,10 @@ export function assignPeople(signalId, userIds, actor, note = null) {
 
   sql.transaction(() => {
     for (const person of people) {
-      if (addAssignee(ASSIGNABLE.SIGNAL, signalId, person, now)) added.push(person);
+      if (!addAssignee(ASSIGNABLE.SIGNAL, signalId, person, now)) continue;
+      added.push(person);
+      // Вкладка «Мои сигналы» у куратора теперь есть навсегда.
+      sql.run(`UPDATE users SET has_own_signals = 1 WHERE id = ?`, [person.id]);
     }
 
     if (added.length) {
@@ -424,10 +471,6 @@ export function assignPeople(signalId, userIds, actor, note = null) {
   return getById(signalId);
 }
 
-/** Может ли этот пользователь быть исполнителем сигнала. */
-function isStaffUser(user) {
-  return user.role === ROLE.MANAGER || user.role === ROLE.ADMIN || user.role === ROLE.SUPERADMIN;
-}
 
 /**
  * Видит ли пользователь конкретный сигнал. Обычный администратор ограничен
@@ -534,23 +577,6 @@ export function findDueForEscalation(now = Date.now()) {
   return hydrate(rows).filter((signal) => isEscalationDue(signal, now));
 }
 
-/**
- * ДЕМО-ИНСТРУМЕНТ: сдвигает метки времени сигнала в прошлое, чтобы автоэскалацию
- * можно было наблюдать не дожидаясь двух суток.
- */
-export function ageSignal(signalId, ms) {
-  const row = getRaw(signalId);
-  if (!row) throw notFound('Сигнал не найден');
-
-  sql.transaction(() => {
-    sql.run(`UPDATE signals SET created_at = created_at - ?, updated_at = updated_at - ? WHERE id = ?`, [ms, ms, signalId]);
-    sql.run(`UPDATE signal_history SET at = at - ? WHERE signal_id = ?`, [ms, signalId]);
-  });
-
-  publish('signal', { id: signalId, aged: true });
-  return getById(signalId);
-}
-
 /* ------------------------- принятие в работу и правки ------------------------- */
 
 export function setAssignee(signalId, actor, assign, userId = actor.id) {
@@ -568,6 +594,7 @@ export function setAssignee(signalId, actor, assign, userId = actor.id) {
   sql.transaction(() => {
     if (assign) {
       if (!addAssignee(ASSIGNABLE.SIGNAL, signalId, actor, now)) return;
+      sql.run(`UPDATE users SET has_own_signals = 1 WHERE id = ?`, [actor.id]);
       insertHistory(signalId, {
         kind: HISTORY_KIND.ASSIGN,
         from: before.status,
@@ -605,7 +632,12 @@ export function updateSignal(signalId, input, actor) {
   const verdict = canEdit(before, actor);
   if (!verdict.allowed) throw forbidden(verdict.reason);
 
-  const { valid, errors } = validateSignalInput(input);
+  // Подрядчик автора не переписывает: имя закреплено за его учетной записью
+  // при создании и правкой карточки не меняется.
+  const contractorName =
+    actor.role === ROLE.CONTRACTOR ? before.contractorName : String(input.contractorName ?? '').trim();
+
+  const { valid, errors } = validateSignalInput({ ...input, contractorName });
   if (!valid) {
     const error = badRequest('Форма заполнена не полностью');
     error.errors = errors;
@@ -613,7 +645,7 @@ export function updateSignal(signalId, input, actor) {
   }
 
   const next = {
-    contractorName: String(input.contractorName).trim(),
+    contractorName,
     sector: String(input.sector).trim(),
     description: String(input.description).trim(),
   };

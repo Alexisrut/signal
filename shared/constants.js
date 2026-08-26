@@ -34,6 +34,19 @@ export const isStaffRole = (role) => isAdminRole(role) || role === ROLE.MANAGER;
 export const isCategoryScopedRole = (role) => role === ROLE.ADMIN || role === ROLE.MANAGER;
 
 /**
+ * Порядок должностей в списках. Списки сотрудников сортируются по нему,
+ * а не по времени создания: должность — то, по чему человека ищут глазами.
+ */
+export const ROLE_RANK = {
+  [ROLE.SUPERADMIN]: 0,
+  [ROLE.ADMIN]: 1,
+  [ROLE.MANAGER]: 2,
+  [ROLE.CONTRACTOR]: 3,
+};
+
+export const roleRank = (role) => ROLE_RANK[role] ?? 99;
+
+/**
  * Типы учетных записей, которые главный администратор заводит вручную.
  * Подрядчик в список не входит: он регистрируется сам.
  */

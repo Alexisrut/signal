@@ -15,11 +15,19 @@ import { emptyState, statusBadge } from '../components.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
 
-const FIELDS = [
-  { name: 'contractorName', label: 'Подрядчик', type: 'input' },
+/**
+ * Поле «Подрядчик» — это имя автора. Подрядчику оно недоступно: имя закреплено
+ * за учетной записью, и переписать его через форму правки нельзя (сервер такую
+ * попытку тоже игнорирует). Администратор карточку правит целиком.
+ */
+const AUTHOR_FIELD = { name: 'contractorName', label: 'Подрядчик', type: 'input' };
+
+const COMMON_FIELDS = [
   { name: 'sector', label: 'Сектор работы', type: 'input' },
   { name: 'description', label: 'Описание проблемы', type: 'textarea' },
 ];
+
+const fieldsFor = (actor) => (isStaff(actor) ? [AUTHOR_FIELD, ...COMMON_FIELDS] : COMMON_FIELDS);
 
 export const editSignalView = {
   // Форма: автоперерисовка по чужим изменениям стерла бы правки на полуслове.
@@ -50,7 +58,8 @@ export const editSignalView = {
       </section>`;
     }
 
-    const fields = FIELDS.map((field) => {
+    const formFields = fieldsFor(actor);
+    const fields = formFields.map((field) => {
       const control =
         field.type === 'textarea'
           ? html`<textarea class="field__control" name="${field.name}" rows="5">${signal[field.name]}</textarea>`
@@ -91,13 +100,15 @@ export const editSignalView = {
     const form = root.querySelector('#edit-signal-form');
     if (!form) return;
 
+    const signal = findAny(ctx.params.id);
+    const formFields = fieldsFor(currentActor());
     const summary = form.querySelector('[data-role="summary"]');
     const button = form.querySelector('button[type="submit"]');
-    const controls = new Map(FIELDS.map((field) => [field.name, form.querySelector(`[name="${field.name}"]`)]));
+    const controls = new Map(formFields.map((field) => [field.name, form.querySelector(`[name="${field.name}"]`)]));
     const backHref = ctx.path.startsWith('/admin') ? `/admin/signal/${ctx.params.id}` : `/my/${ctx.params.id}`;
 
     function showErrors(errors, message = 'Заполните подсвеченные поля — изменения не сохранены.') {
-      FIELDS.forEach((field) => {
+      formFields.forEach((field) => {
         form.querySelector(`[data-field="${field.name}"]`).classList.toggle('is-invalid', Boolean(errors[field.name]));
         form.querySelector(`[data-error-for="${field.name}"]`).textContent = errors[field.name] ?? '';
       });
@@ -117,7 +128,9 @@ export const editSignalView = {
       event.preventDefault();
 
       const payload = {
-        contractorName: controls.get('contractorName').value,
+        // Подрядчик поля автора не видит — подставляем текущее значение,
+        // чтобы форма прошла ту же проверку, что и на сервере.
+        contractorName: controls.get('contractorName')?.value ?? signal?.contractorName ?? '',
         sector: controls.get('sector').value,
         description: controls.get('description').value,
       };
@@ -125,7 +138,7 @@ export const editSignalView = {
       const { valid, errors } = validateSignalInput(payload);
       if (!valid) {
         showErrors(errors);
-        controls.get(FIELDS.find((field) => errors[field.name]).name).focus();
+        controls.get(formFields.find((field) => errors[field.name])?.name)?.focus();
         return;
       }
 

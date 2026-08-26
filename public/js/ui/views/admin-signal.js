@@ -9,7 +9,6 @@ import {
   authorLabel,
   changeStatus,
   reopenSignal,
-  ageSignal,
   setAssignee,
   assignPeople,
   distribute,
@@ -58,6 +57,9 @@ export const adminSignalView = {
     const mine = isAssignedTo(signal, actor.id);
     const active = isActive(signal.status);
     const reopenVerdict = canReopen(signal, actor);
+    // Раздача задач — работа администратора; руководитель ведет свои,
+    // но состав кураторов не меняет.
+    const distributes = canAssignOthers(signal, actor).allowed;
 
     const actions = active
       ? html`
@@ -167,16 +169,16 @@ export const adminSignalView = {
 
           <div class="detail__section">
             <div class="detail__section-head">
-              <h2>Исполнители (${signal.assignees.length})</h2>
+              <h2>Кураторы (${signal.assignees.length})</h2>
               ${[
-                canAssignOthers(signal, actor).allowed
+                distributes
                   ? html`<button class="btn btn--secondary btn--sm" data-action="assign-people">
                       Назначить руководителей
                     </button>`
                   : '',
               ]}
             </div>
-            ${[assigneeRoster(signal, { removable: true })]}
+            ${[assigneeRoster(signal, { removable: distributes })]}
           </div>
 
           <div class="detail__section">
@@ -205,16 +207,6 @@ export const adminSignalView = {
             процесс через ${Math.round(ESCALATION_MS / 3600000)} часов — либо администратор вручную,
             не дожидаясь порога; в истории эти случаи различимы по автору события.
           </p>
-
-          ${[
-            signal.status === STATUS.YELLOW
-              ? html`<div class="devtool">
-                  <span class="devtool__label">Демо-режим</span>
-                  <button class="btn btn--ghost btn--sm" data-age="${signal.id}">Состарить сигнал на 48 часов</button>
-                  <small>Меняет только метки времени. Красный статус все равно выставит фоновый процесс сервера.</small>
-                </div>`
-              : '',
-          ]}
 
           <div class="detail__section">
             <h2>История событий</h2>
@@ -315,14 +307,5 @@ export const adminSignalView = {
       }
     });
 
-    root.querySelector('[data-age]')?.addEventListener('click', async (event) => {
-      event.currentTarget.disabled = true;
-      try {
-        await ageSignal(event.currentTarget.dataset.age);
-        showToast('Метки времени сдвинуты — дождитесь тика фонового процесса', 'info');
-      } catch (error) {
-        showToast(error.message, 'error');
-      }
-    });
   },
 };

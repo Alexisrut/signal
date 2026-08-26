@@ -133,9 +133,3 @@ export async function setAssignee(id, assign, userId) {
   return result.signal;
 }
 
-/** Демо-инструмент: сдвиг меток времени, чтобы увидеть работу автоэскалации. */
-export async function ageSignal(id) {
-  const result = await api.ageSignal(id);
-  await store.refresh();
-  return result.signal;
-}

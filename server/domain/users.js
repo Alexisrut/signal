@@ -21,6 +21,7 @@ import { deliveryMode } from '../mail/transport.js';
 
 import {
   ROLE,
+  ROLE_RANK,
   ACCOUNT_TYPE_IDS,
   CATEGORY_IDS,
   DEFAULT_NOTIFY,
@@ -107,9 +108,19 @@ export function registerContractor(input) {
 
 /* --------------------------- учетные записи сотрудников ----------------------- */
 
+/**
+ * Список учетных записей, сгруппированный по должности: главные администраторы,
+ * администраторы, руководители, подрядчики — а внутри должности по алфавиту.
+ * Время создания как порядок не годится: в списке ищут человека и роль,
+ * а не «кого завели раньше».
+ */
 export function listUsers() {
+  const rank = Object.entries(ROLE_RANK)
+    .map(([role, value]) => `WHEN '${role}' THEN ${value}`)
+    .join(' ');
+
   return sql
-    .all(`SELECT * FROM users ORDER BY created_at`)
+    .all(`SELECT * FROM users ORDER BY CASE role ${rank} ELSE 99 END, display_name COLLATE NOCASE`)
     .map(toUser)
     .map((user) => ({
       id: user.id,
@@ -126,17 +137,14 @@ export function listUsers() {
 }
 
 /**
- * Кого можно назначить на сигнал. Руководители идут вместе с курируемыми
- * категориями: окно распределения подсказывает «свой» список, но выбрать
- * разрешает кого угодно, в том числе из других категорий.
+ * Кандидаты в кураторы сигнала — только руководители.
+ * Администраторы раздают задачи, но сами кураторами не становятся, поэтому
+ * в списке выбора их нет. Категории каждого едут рядом: окно распределения
+ * оставляет лишь тех, за кем закреплена категория конкретного сигнала.
  */
 export function listAssignables() {
   return sql
-    .all(`SELECT * FROM users WHERE role IN (?, ?, ?) ORDER BY role, display_name`, [
-      ROLE.MANAGER,
-      ROLE.ADMIN,
-      ROLE.SUPERADMIN,
-    ])
+    .all(`SELECT * FROM users WHERE role = ? ORDER BY display_name COLLATE NOCASE`, [ROLE.MANAGER])
     .map(toUser)
     .map((user) => ({
       id: user.id,
@@ -391,9 +399,4 @@ export function resetPassword(token, input) {
 
   publish('user', { id: row.user_id, passwordReset: true });
   return findUser(row.user_id);
-}
-
-/** Жива ли еще учетная запись по умолчанию — для демо-подсказки на форме входа. */
-export function hasDefaultAdmin() {
-  return Boolean(findByLogin('admin'));
 }

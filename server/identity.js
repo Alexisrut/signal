@@ -36,6 +36,8 @@ export function toUser(row) {
     isEmailVerified: Boolean(row.is_email_verified),
     // Подписки на письма есть у всех ролей; у подрядчика используется только тумблер.
     notify: normalizeNotify(safeParse(row.notify, null)),
+    // Показывать ли вкладку «Мои сигналы»: признак залипающий, см. db.js.
+    hasOwnSignals: Boolean(row.has_own_signals),
   };
 
   if (row.role === ROLE.CONTRACTOR) {

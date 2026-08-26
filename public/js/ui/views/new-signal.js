@@ -1,14 +1,17 @@
 /**
- * Создание сигнала подрядчиком.
+ * Создание сигнала.
  *
- * Категорию подрядчик не выбирает: сигнал уходит нераспределенным и попадает
- * в раздел «Распределение» к главному администратору. Валидация строгая —
- * пустые поля подсвечиваются до любого сетевого вызова.
+ * Форма спрашивает только суть проблемы: где и что. Автора она не спрашивает
+ * вовсе — ни у подрядчика, ни у сотрудника. Имя подставляется сервером из
+ * сессии, поэтому подписаться чужим именем нельзя даже подделав запрос.
+ *
+ * Категорию тоже никто не выбирает: сигнал уходит нераспределенным
+ * в раздел «Распределение» к главному администратору.
  */
 
 import { html } from '../../core/utils.js';
 import { validateSignalInput } from '/shared/validation.js';
-import { currentActor } from '../../domain/session.js';
+import { currentActor, isContractor, isSuperadmin } from '../../domain/session.js';
 import { createSignal } from '../../domain/signals.js';
 import { upload } from '../../domain/files.js';
 import { fileField, bindFileField } from '../components.js';
@@ -16,16 +19,14 @@ import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
 
 /** Черновик переживает уход со страницы и возврат назад. */
-const draft = { contractorName: '', sector: '', description: '' };
+const draft = { sector: '', description: '' };
 
 function resetDraft() {
-  draft.contractorName = '';
   draft.sector = '';
   draft.description = '';
 }
 
 const FIELDS = [
-  { name: 'contractorName', label: 'Подрядчик', placeholder: 'Например: ООО «СтройМонтаж»', type: 'input' },
   { name: 'sector', label: 'Сектор работы', placeholder: 'Например: Блок Б, 3 этаж', type: 'input' },
   {
     name: 'description',
@@ -35,14 +36,16 @@ const FIELDS = [
   },
 ];
 
+/** Имя, под которым сигнал уйдет в систему, — то же, что подставит сервер. */
+function authorName(actor) {
+  return isContractor(actor) ? (actor.companyName ?? actor.displayName) : actor.displayName;
+}
+
 export const newSignalView = {
   live: false,
 
   render() {
     const actor = currentActor();
-
-    // Название компании подставляется сразу: подрядчик сообщает о себе.
-    if (!draft.contractorName && actor.companyName) draft.contractorName = actor.companyName;
 
     const fields = FIELDS.map((field) => {
       const control =
@@ -62,14 +65,23 @@ export const newSignalView = {
     return html`
       <section class="wizard">
         <h1 class="wizard__title">Опишите проблему</h1>
-        <p class="wizard__lead">Следить за ходом рассмотрения можно в разделе «Мои сигналы».</p>
+        <p class="wizard__lead">
+          ${isContractor(actor)
+            ? 'Следить за ходом рассмотрения можно в разделе «Мои сигналы».'
+            : 'Сигнал уйдет главному администратору на распределение.'}
+        </p>
 
         <form class="form" id="signal-form" novalidate>
+          <div class="author-note">
+            <span class="author-note__label">Сигнал будет подан от имени</span>
+            <strong class="author-note__value">${authorName(actor)}</strong>
+          </div>
+
           ${fields}
           ${[fileField({ label: 'Вложения (необязательно)' })]}
           <div class="form__hint form__hint--error" data-role="summary" hidden></div>
           <div class="wizard__actions">
-            <a class="btn btn--ghost" href="#/my">Отмена</a>
+            <a class="btn btn--ghost" href="${isContractor(actor) ? '#/my' : '#/'}">Отмена</a>
             <button class="btn btn--primary" type="submit">Отправить сигнал</button>
           </div>
         </form>
@@ -78,6 +90,7 @@ export const newSignalView = {
   },
 
   mount(root) {
+    const actor = currentActor();
     const form = root.querySelector('#signal-form');
     const summary = form.querySelector('[data-role="summary"]');
     const submitButton = form.querySelector('button[type="submit"]');
@@ -115,12 +128,13 @@ export const newSignalView = {
       event.preventDefault();
 
       const payload = {
-        contractorName: controls.get('contractorName').value,
         sector: controls.get('sector').value,
         description: controls.get('description').value,
       };
 
-      const { valid, errors } = validateSignalInput(payload);
+      // Имя автора проверяем тем же правилом, что и сервер, но берем его
+      // из сессии: в теле запроса этого поля нет вовсе.
+      const { valid, errors } = validateSignalInput({ ...payload, contractorName: authorName(actor) });
       if (!valid) {
         showErrors(errors);
         return;
@@ -142,7 +156,11 @@ export const newSignalView = {
         resetDraft();
         attachments.clear();
         showToast('Сигнал создан и отправлен на рассмотрение', 'success');
-        navigate(`/my/${signal.id}`);
+
+        // Подрядчик идет к своей карточке. Сотруднику вести некуда: сигнал
+        // еще не распределен, и увидеть его может только главный администратор.
+        if (isContractor(actor)) navigate(`/my/${signal.id}`);
+        else navigate(isSuperadmin(actor) ? '/admin/distribution' : '/');
       } catch (error) {
         submitButton.disabled = false;
         submitButton.textContent = 'Отправить сигнал';

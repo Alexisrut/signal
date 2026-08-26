@@ -1,33 +1,22 @@
 /**
- * Окно выбора руководителей при выдаче задачи.
+ * Окно выбора кураторов при выдаче задачи.
  *
- * Список делится на две части: сначала те, кто курирует выбранную категорию,
- * затем все остальные — но выбрать можно кого угодно и сколько угодно,
- * ограничение по категории здесь подсказка, а не запрет.
+ * Кандидат — только руководитель, за которым закреплена категория этого
+ * сигнала: администраторы задачи раздают, но кураторами не становятся,
+ * а руководитель «не своей» категории в списке не появляется.
+ *
+ * Список фильтруется строкой поиска по ФИО — на десятке руководителей это
+ * уже быстрее, чем глазами.
  *
  * К назначению прикладывается заметка: ее увидят все ответственные за задачу.
  */
 
 import { html } from '../core/utils.js';
-import { ROLE_LABEL, categoryShort, categoryLabel } from '/shared/constants.js';
+import { categoryLabel, categoryShort } from '/shared/constants.js';
+import { canCurate } from '/shared/state-machine.js';
 import { listAssignables } from '../domain/session.js';
 import { checkbox } from './components.js';
 import { openModal } from './modal.js';
-
-function personRow(person, { checked, disabled }) {
-  const scope = person.categories?.length
-    ? person.categories.map((id) => categoryShort(id)).join(', ')
-    : 'категории не выбраны';
-
-  return checkbox({
-    name: 'assignee',
-    value: person.id,
-    label: `${person.displayName} · ${ROLE_LABEL[person.role] ?? 'сотрудник'}`,
-    hint: disabled ? 'уже назначен на этот сигнал' : scope,
-    checked,
-    disabled,
-  });
-}
 
 /**
  * @param {object} options
@@ -36,7 +25,7 @@ function personRow(person, { checked, disabled }) {
  * @param {string} [options.title] заголовок окна
  * @param {string} [options.confirmLabel] подпись кнопки подтверждения
  * @param {boolean} [options.allowEmpty] можно ли подтвердить, никого не выбрав
- *   (при распределении — да: категорию назначают и без исполнителей)
+ *   (при распределении — да: категорию назначают и без кураторов)
  * @returns {Promise<{assignees: string[], note: string}|null>} null — окно закрыли
  */
 export function openAssignDialog({
@@ -46,44 +35,45 @@ export function openAssignDialog({
   confirmLabel = 'Назначить',
   allowEmpty = false,
 }) {
-  const people = listAssignables();
   const already = new Set((signal?.assignees ?? []).map((person) => person.id));
+  const candidates = listAssignables().filter((person) => canCurate(person, category));
 
-  const curating = people.filter((person) => category && (person.categories ?? []).includes(category));
-  const curatingIds = new Set(curating.map((person) => person.id));
-  const others = people.filter((person) => !curatingIds.has(person.id));
-
-  const section = (heading, list, hint) =>
-    list.length
-      ? html`<div class="picker__group">
-          <span class="picker__legend">${heading}</span>
-          ${[hint ? html`<span class="picker__hint">${hint}</span>` : '']}
-          <div class="checkboxes checkboxes--column">
-            ${list.map((person) => personRow(person, { checked: false, disabled: already.has(person.id) }))}
-          </div>
-        </div>`
-      : '';
+  const rows = candidates.map((person) =>
+    html`<div class="picker__row" data-name="${person.displayName.toLowerCase()}">
+      ${[
+        checkbox({
+          name: 'assignee',
+          value: person.id,
+          label: person.displayName,
+          hint: already.has(person.id)
+            ? 'уже назначен на этот сигнал'
+            : person.categories.map((id) => categoryShort(id)).join(', '),
+          checked: false,
+          disabled: already.has(person.id),
+        }),
+      ]}
+    </div>`,
+  );
 
   const bodyHtml = html`
+    <p class="picker__category">Категория: <strong>${categoryLabel(category)}</strong></p>
+
     ${[
-      category
-        ? html`<p class="picker__category">
-            Категория: <strong>${categoryLabel(category)}</strong>
-          </p>`
-        : '',
-    ]}
-    ${[
-      people.length
-        ? html`${[section(curating.length ? `Курируют категорию (${curating.length})` : '', curating)]}
-            ${[
-              section(
-                curating.length ? `Остальные сотрудники (${others.length})` : `Сотрудники (${others.length})`,
-                others,
-                curating.length ? 'Можно назначить и тех, кто курирует другие категории.' : '',
-              ),
-            ]}`
+      candidates.length
+        ? html`<div class="picker__group">
+            <label class="field field--search">
+              <span class="field__label">Поиск по ФИО</span>
+              <input class="field__control" type="search" data-role="search" placeholder="Начните вводить фамилию"
+                autocomplete="off" />
+            </label>
+
+            <span class="picker__legend">Руководители категории (${candidates.length})</span>
+            <div class="checkboxes checkboxes--column" data-role="list">${rows}</div>
+            <p class="picker__empty" data-role="no-match" hidden>Никто не подходит под запрос.</p>
+          </div>`
         : html`<p class="picker__empty">
-            Ни одной учетной записи руководителя пока нет — создайте ее в разделе «Учетные записи».
+            За этой категорией не закреплен ни один руководитель. Назначьте ему категорию
+            в разделе «Учетные записи» — после этого он появится в списке.
           </p>`,
     ]}
 
@@ -101,16 +91,43 @@ export function openAssignDialog({
     title: title ?? 'Кому выдать задачу',
     bodyHtml,
     confirmLabel,
+    mount: (root) => bindSearch(root),
     collect: (root) => {
       const assignees = [...root.querySelectorAll('[name="assignee"]:checked')].map((input) => input.value);
       const note = root.querySelector('[name="note"]').value.trim();
 
       if (!allowEmpty && !assignees.length && !note) {
         root.querySelector('[data-role="picker-error"]').textContent =
-          'Выберите хотя бы одного исполнителя или напишите заметку.';
+          'Выберите хотя бы одного руководителя или напишите заметку.';
         return null;
       }
       return { assignees, note };
     },
+  });
+}
+
+/**
+ * Фильтрация списка по ФИО. Отмеченные строки не прячем даже когда они не
+ * подходят под запрос: иначе выбор незаметно потерялся бы при вводе текста.
+ */
+function bindSearch(root) {
+  const search = root.querySelector('[data-role="search"]');
+  if (!search) return;
+
+  const rows = [...root.querySelectorAll('.picker__row')];
+  const empty = root.querySelector('[data-role="no-match"]');
+
+  search.addEventListener('input', () => {
+    const query = search.value.trim().toLowerCase();
+    let visible = 0;
+
+    for (const row of rows) {
+      const checked = row.querySelector('input')?.checked;
+      const match = !query || row.dataset.name.includes(query) || checked;
+      row.hidden = !match;
+      if (match) visible += 1;
+    }
+
+    if (empty) empty.hidden = visible > 0;
   });
 }

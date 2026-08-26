@@ -35,7 +35,12 @@ export function statusLegend() {
   return html`<ul class="legend">${items}</ul>`;
 }
 
-export function categoryTag(category) {
+/**
+ * Метка категории. `hideUndistributed` убирает плашку «Не распределен»:
+ * подрядчику незачем видеть, что его сигнал еще ждет разбора внутри системы.
+ */
+export function categoryTag(category, { hideUndistributed = false } = {}) {
+  if (!category && hideUndistributed) return '';
   const cls = category ? `tag--${category}` : 'tag--none';
   return html`<span class="tag ${cls}">${categoryShort(category)}</span>`;
 }
@@ -257,16 +262,39 @@ function editDiff(entry) {
   return html`<ul class="diff">${rows}</ul>`;
 }
 
+/** Записи, которые видит подрядчик: только системный след смены статуса. */
+const isStatusEntry = (entry) =>
+  entry.kind === HISTORY_KIND.CREATE || entry.kind === HISTORY_KIND.STATUS || entry.kind === HISTORY_KIND.REOPEN;
+
 /**
  * Лента истории: создание, смены статуса, правки и принятие в работу.
  * Одна и та же для сигналов и задач — отличаются только подписи статусов.
+ *
+ * `statusOnly` оставляет голый журнал статусов без авторов, заметок и правок —
+ * этот режим включен для подрядчика: внутренняя переписка и перестановки
+ * исполнителей его карточки не касаются.
  */
-export function historyList(history, { badgeFor = statusBadge, statusMeta = STATUS_META } = {}) {
+export function historyList(history, { badgeFor = statusBadge, statusMeta = STATUS_META, statusOnly = false } = {}) {
   const shortName = (status) => statusMeta[status]?.short ?? statusMeta[status]?.label ?? status;
 
   const items = [...(history ?? [])]
+    .filter((entry) => !statusOnly || isStatusEntry(entry))
     .sort((a, b) => a.at - b.at)
     .map((entry) => {
+      if (statusOnly) {
+        const transition = entry.from ? `${shortName(entry.from)} → ${shortName(entry.to)}` : 'Сигнал зарегистрирован';
+        return html`<li class="history__item history__item--${entry.to}">
+          <div class="history__marker"></div>
+          <div class="history__body">
+            <div class="history__row">
+              ${[badgeFor(entry.to)]}
+              <span class="history__time">${formatDateTime(entry.at)}</span>
+            </div>
+            <div class="history__meta">${transition}</div>
+          </div>
+        </li>`;
+      }
+
       const isStatusEvent = entry.kind === HISTORY_KIND.STATUS || entry.kind === HISTORY_KIND.CREATE;
       const marker = isStatusEvent && entry.to ? entry.to : entry.kind;
 
@@ -305,9 +333,11 @@ export function historyList(history, { badgeFor = statusBadge, statusMeta = STAT
  * показываем фамилии с инициалами и сворачиваем хвост в «+N», полные имена
  * остаются в подсказке и в карточке.
  */
-export function assigneeChip(entity, { compact = true, freeLabel = 'Не принят', limit = 2 } = {}) {
+export function assigneeChip(entity, { compact = true, freeLabel = 'Не принят', limit = 2, hideFree = false } = {}) {
   const people = entity?.assignees ?? [];
-  if (!people.length) return html`<span class="assignee assignee--free">${freeLabel}</span>`;
+  // hideFree убирает плашку «Не принят»: кто взял задачу внутри — не то,
+  // что подрядчик должен видеть на своей карточке.
+  if (!people.length) return hideFree ? '' : html`<span class="assignee assignee--free">${freeLabel}</span>`;
 
   const fullList = people.map((person) => person.name).join(', ');
   const shown = compact ? people.slice(0, limit) : people;

@@ -45,6 +45,19 @@ export function isEmailVerified(actor = currentActor()) {
   return actor.isEmailVerified === true;
 }
 
+/**
+ * Показывать ли вкладку «Мои сигналы».
+ *
+ * До первого своего сигнала вкладки нет — пустой раздел в меню только мешает.
+ * После появления она остается навсегда: решенные задачи из личного списка
+ * не исчезают, а признак на сервере залипающий, поэтому снятие с задачи
+ * вкладку не прячет.
+ */
+export function hasSignalsTab(actor = currentActor()) {
+  if (!isAuthenticated(actor)) return false;
+  return actor.hasOwnSignals === true || (store.getState().mySignals ?? []).length > 0;
+}
+
 /** Категории, доступные текущему пользователю (у главного администратора — все). */
 export function myCategories(actor = currentActor()) {
   return actor.categories ?? [];

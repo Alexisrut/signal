@@ -9,7 +9,7 @@ import { SMTP_CONFIGURED, APP_URL } from '../config.js';
 import * as signalsService from '../domain/signals.js';
 import * as usersService from '../domain/users.js';
 
-import { ESCALATION_MS, ROLE, STATUS } from '../../shared/constants.js';
+import { ESCALATION_MS, ROLE } from '../../shared/constants.js';
 
 /** Гость получает только meta — этого достаточно, чтобы показать вход и регистрацию. */
 function requireActor(actor) {
@@ -38,6 +38,8 @@ function publicActor(actor) {
     email: actor.email,
     isEmailVerified: actor.isEmailVerified,
     notify: actor.notify,
+    // Показывать ли вкладку «Мои сигналы» — признак залипающий.
+    hasOwnSignals: actor.hasOwnSignals,
     createdAt: actor.createdAt,
   };
 
@@ -52,7 +54,6 @@ function meta() {
     mailMode: deliveryMode,
     smtpConfigured: SMTP_CONFIGURED,
     appUrl: APP_URL,
-    defaultAdminPresent: usersService.hasDefaultAdmin(),
   };
 }
 
@@ -74,8 +75,10 @@ export function getState(req, res, { actor }) {
 
   const payload = {
     actor: publicActor(actor),
-    // Изоляция подрядчиков живет здесь: чужие сигналы просто не попадают в ответ.
-    mySignals: isContractor(actor) ? signalsService.listByAuthor(actor.id) : null,
+    // «Мои сигналы» у подрядчика — то, что он подал; у сотрудника — то,
+    // за что он лично отвечает. Изоляция подрядчиков живет здесь:
+    // чужие сигналы просто не попадают в ответ.
+    mySignals: isContractor(actor) ? signalsService.listByAuthor(actor.id) : signalsService.listAssignedTo(actor.id),
     // Администратор и руководитель видят только разрешенные им категории.
     allSignals: staff ? signalsService.listForAdmin(actor) : null,
     // Раздел «Распределение» существует только для главного администратора.
@@ -100,8 +103,14 @@ export function getState(req, res, { actor }) {
 
 /* ---------------------------------- сигналы ---------------------------------- */
 
+/**
+ * Сигнал заводит и подрядчик, и сотрудник платформы. Автор всегда берется
+ * из сессии: тело запроса имя автора не передает и передать не может.
+ */
 export async function createSignal(req, res, { actor }) {
-  if (!isContractor(requireActor(actor))) throw forbidden('Создавать сигналы может только подрядчик');
+  requireActor(actor);
+  if (!isContractor(actor) && !isStaff(actor)) throw forbidden('Создавать сигналы может участник системы');
+
   const body = await readJsonBody(req);
   const signal = signalsService.createSignal(body, actor);
   sendJson(res, 201, { signal });
@@ -163,16 +172,6 @@ export async function assignSignal(req, res, { actor, params }) {
 export async function seenSignal(req, res, { actor, params }) {
   requireStaff(actor);
   sendJson(res, 200, { seen: signalsService.markSeen(params.id, actor.id) });
-}
-
-/** Демо-инструмент: сдвиг меток времени, чтобы увидеть работу автоэскалации. */
-export function ageSignal(req, res, { actor, params }) {
-  requireStaff(actor);
-  const signal = signalsService.getById(params.id);
-  if (!signal) throw notFound('Сигнал не найден');
-  if (signal.status !== STATUS.YELLOW) throw badRequest('Состарить можно только Желтый сигнал');
-
-  sendJson(res, 200, { signal: signalsService.ageSignal(params.id, ESCALATION_MS) });
 }
 
 /* ------------------------------ вход и регистрация ---------------------------- */

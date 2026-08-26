@@ -49,7 +49,6 @@ export const api = {
   markSignalSeen: (id) => request('POST', `/api/signals/${encodeURIComponent(id)}/seen`),
   distributeSignal: (id, category, assignees, note) =>
     request('POST', `/api/signals/${encodeURIComponent(id)}/category`, { category, assignees, note }),
-  ageSignal: (id) => request('POST', `/api/signals/${encodeURIComponent(id)}/age`),
 
   login: (login, password) => request('POST', '/api/auth/login', { login, password }),
   logout: () => request('POST', '/api/auth/logout'),
