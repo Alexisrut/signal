@@ -9,7 +9,7 @@ import { html } from '../../core/utils.js';
 import { categoryLabel } from '/shared/constants.js';
 import { validateSignalInput } from '/shared/validation.js';
 import { canEdit } from '/shared/state-machine.js';
-import { currentActor, isStaff } from '../../domain/session.js';
+import { currentActor, isStaff, isSuperadmin } from '../../domain/session.js';
 import { findAny, updateSignal } from '../../domain/signals.js';
 import { emptyState, statusBadge } from '../components.js';
 import { navigate } from '../router.js';
@@ -59,6 +59,10 @@ export const editSignalView = {
     }
 
     const formFields = fieldsFor(actor);
+    // Заметку к распределению правит только главный администратор: это
+    // сообщение кураторам, и переписывать его на ходу может лишь тот,
+    // кто задачу раздавал.
+    const editsNote = isSuperadmin(actor);
     const fields = formFields.map((field) => {
       const control =
         field.type === 'textarea'
@@ -84,6 +88,19 @@ export const editSignalView = {
 
         <form class="form" id="edit-signal-form" novalidate>
           ${fields}
+
+          ${[
+            editsNote
+              ? html`<label class="field" data-field="assignmentNote">
+                  <span class="field__label">Заметка к распределению</span>
+                  <textarea class="field__control" name="assignmentNote" rows="3"
+                    placeholder="Что важно учесть кураторам (необязательно)">${signal.assignmentNote ?? ''}</textarea>
+                  <span class="field__hint">
+                    Видна кураторам задачи. Изменение попадет в историю событий отдельной записью.
+                  </span>
+                </label>`
+              : '',
+          ]}
 
           <div class="form__hint form__hint--error" data-role="summary" hidden></div>
 
@@ -127,12 +144,16 @@ export const editSignalView = {
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
 
+      const noteControl = form.querySelector('[name="assignmentNote"]');
       const payload = {
         // Подрядчик поля автора не видит — подставляем текущее значение,
         // чтобы форма прошла ту же проверку, что и на сервере.
         contractorName: controls.get('contractorName')?.value ?? signal?.contractorName ?? '',
         sector: controls.get('sector').value,
         description: controls.get('description').value,
+        // Ключа нет вовсе, когда поля нет: сервер отличает «не трогали»
+        // от «очистили» именно по его отсутствию.
+        ...(noteControl ? { assignmentNote: noteControl.value } : {}),
       };
 
       const { valid, errors } = validateSignalInput(payload);

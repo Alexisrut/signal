@@ -26,6 +26,7 @@ import {
   SYSTEM_ACTOR,
   categoryLabel,
   isCategoryScopedRole,
+  isSuperadminRole,
 } from '../../shared/constants.js';
 import {
   canAssign,
@@ -654,7 +655,17 @@ export function updateSignal(signalId, input, actor) {
     .filter((field) => next[field] !== before[field])
     .map((field) => ({ field, label: SIGNAL_FIELD_LABELS[field], from: before[field], to: next[field] }));
 
-  if (!changes.length) return before;
+  /*
+   * Заметку к распределению правит только главный администратор, и только
+   * она из полей карточки уезжает в историю отдельной записью: заметка —
+   * сообщение кураторам, а не поле формы, и «кто и когда его переписал»
+   * должно читаться в ленте само по себе, а не прятаться в diff правки.
+   */
+  const noteRequested = isSuperadminRole(actor.role) && input.assignmentNote !== undefined;
+  const nextNote = noteRequested ? cleanNote(input.assignmentNote) : before.assignmentNote;
+  const noteChanged = noteRequested && nextNote !== before.assignmentNote;
+
+  if (!changes.length && !noteChanged) return before;
 
   const now = Date.now();
   sql.transaction(() => {
@@ -666,19 +677,44 @@ export function updateSignal(signalId, input, actor) {
       signalId,
     ]);
 
-    insertHistory(signalId, {
-      kind: HISTORY_KIND.EDIT,
-      from: before.status,
-      to: before.status,
-      actor,
-      at: now,
-      note: `Отредактировано: ${changes.map((change) => change.label.toLowerCase()).join(', ')}`,
-      details: { changes },
-    });
+    if (changes.length) {
+      insertHistory(signalId, {
+        kind: HISTORY_KIND.EDIT,
+        from: before.status,
+        to: before.status,
+        actor,
+        at: now,
+        note: `Отредактировано: ${changes.map((change) => change.label.toLowerCase()).join(', ')}`,
+        details: { changes },
+      });
+    }
+
+    if (noteChanged) {
+      sql.run(`UPDATE signals SET assignment_note = ? WHERE id = ?`, [nextNote, signalId]);
+      insertHistory(signalId, {
+        kind: HISTORY_KIND.NOTE,
+        from: before.status,
+        to: before.status,
+        actor,
+        at: now,
+        note: nextNote ?? 'Заметка к распределению удалена',
+        details: { from: before.assignmentNote, to: nextNote, edited: true },
+      });
+    }
   });
 
   publish('signal', { id: signalId, edited: true });
   return getById(signalId);
+}
+
+/**
+ * Сектор из последнего сигнала этого автора — для подстановки в форму
+ * создания. Люди подают проблемы по одному и тому же объекту подряд,
+ * и перепечатывать «Блок Б, 3 этаж» каждый раз незачем.
+ */
+export function lastSectorOf(authorId) {
+  const row = sql.get(`SELECT sector FROM signals WHERE author_id = ? ORDER BY created_at DESC LIMIT 1`, [authorId]);
+  return row?.sector ?? null;
 }
 
 /* ------------------------- индикатор новых изменений -------------------------- */

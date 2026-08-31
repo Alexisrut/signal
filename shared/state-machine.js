@@ -33,8 +33,8 @@ import {
   ESCALATION_MS,
   HISTORY_KIND,
   NOTIFICATION_EVENT,
-  isAdminRole,
   isStaffRole,
+  isSuperadminRole,
 } from './constants.js';
 
 /** Декларативное описание разрешенных переходов. */
@@ -221,9 +221,11 @@ export function isAssignedTo(entity, userId) {
  */
 export function canAssign(signal, actor) {
   if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
-  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Принимать в работу может только сотрудник платформы' };
+  if (!isSuperadminRole(actor?.role)) {
+    return { allowed: false, reason: 'Состав кураторов ведет только главный администратор' };
+  }
   if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт' };
-  if (isAssignedTo(signal, actor.id)) return { allowed: false, reason: 'Вы уже в работе по этому сигналу' };
+  if (isAssignedTo(signal, actor.id)) return { allowed: false, reason: 'Этот сигнал уже за вами' };
   return { allowed: true };
 }
 
@@ -234,8 +236,8 @@ export function canAssign(signal, actor) {
  */
 export function canAssignOthers(signal, actor) {
   if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
-  if (!isAdminRole(actor?.role)) {
-    return { allowed: false, reason: 'Назначать кураторов может только администратор' };
+  if (!isSuperadminRole(actor?.role)) {
+    return { allowed: false, reason: 'Назначать кураторов может только главный администратор' };
   }
   if (isTerminal(signal.status)) return { allowed: false, reason: 'Сигнал закрыт — сначала возобновите его' };
   return { allowed: true };
@@ -253,17 +255,15 @@ export function canCurate(user, category) {
 }
 
 /**
- * Снять исполнителя. Себя снимает любой сотрудник, коллегу — только
- * администратор: состав кураторов — часть распределения, а его руководитель
- * не ведет.
+ * Снять куратора с задачи. Как и назначение — только главный администратор:
+ * состав ответственных целиком его зона, самостоятельно из задачи не выходят.
  */
 export function canRelease(signal, actor, userId = actor?.id) {
   if (!assignees(signal).length) return { allowed: false, reason: 'Сигнал никем не принят' };
-  if (!isStaffRole(actor?.role)) return { allowed: false, reason: 'Доступно только сотруднику платформы' };
-  if (userId !== actor?.id && !isAdminRole(actor?.role)) {
-    return { allowed: false, reason: 'Снимать других исполнителей может только администратор' };
+  if (!isSuperadminRole(actor?.role)) {
+    return { allowed: false, reason: 'Снимать кураторов может только главный администратор' };
   }
-  if (!isAssignedTo(signal, userId)) return { allowed: false, reason: 'Этот исполнитель не в работе по сигналу' };
+  if (!isAssignedTo(signal, userId)) return { allowed: false, reason: 'Этот куратор не ведет сигнал' };
   return { allowed: true };
 }
 

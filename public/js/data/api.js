@@ -62,6 +62,7 @@ export const api = {
   createAdmin: (input) => request('POST', '/api/admins', input),
   updateUserCategories: (id, categories) =>
     request('PUT', `/api/users/${encodeURIComponent(id)}/categories`, { categories }),
+  updateUserRole: (id, role) => request('PUT', `/api/users/${encodeURIComponent(id)}/role`, { role }),
   deleteUser: (id) => request('DELETE', `/api/users/${encodeURIComponent(id)}`),
   updateNotify: (notify) => request('PUT', '/api/notifications', { notify }),
   resendVerification: () => request('POST', '/api/verification/resend'),

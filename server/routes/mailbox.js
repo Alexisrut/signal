@@ -1,12 +1,13 @@
 /**
  * Dev-инбокс: просмотр писем, когда SMTP не настроен.
- * Работает только в режиме dev-inbox — при живом SMTP отдает 404.
+ * Работает только в режиме dev-inbox и только для главного администратора.
  */
 
 import fs from 'node:fs';
 
-import { sendHtml, sendText, notFound } from '../http.js';
+import { sendHtml, sendText, notFound, forbidden } from '../http.js';
 import { SMTP_CONFIGURED } from '../config.js';
+import { isSuperadmin } from '../identity.js';
 import { listMailLog, getMail } from '../mail/transport.js';
 
 const formatter = new Intl.DateTimeFormat('ru-RU', {
@@ -25,12 +26,23 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
-function guard() {
+/**
+ * Двух проверок здесь не по одной на всякий случай, а потому что каждая
+ * закрывает свою дыру.
+ *
+ * Режим отсекает раздел на рабочей почте. Но одной этой проверки мало:
+ * стоит `.env` не доехать до сервера или потерять SMTP_HOST — и раздел
+ * открывается снова, уже на публичном адресе, вместе с телами всех писем
+ * и действующими ссылками восстановления пароля. Поэтому рядом стоит
+ * проверка роли: читать чужую почту может только главный администратор.
+ */
+function guard(actor) {
   if (SMTP_CONFIGURED) throw notFound('Dev-инбокс отключен: настроен реальный SMTP');
+  if (!isSuperadmin(actor)) throw forbidden('Dev-инбокс доступен только главному администратору');
 }
 
-export function mailboxIndex(req, res) {
-  guard();
+export function mailboxIndex(req, res, { actor }) {
+  guard(actor);
   const mails = listMailLog(100);
 
   const rows = mails
@@ -75,8 +87,8 @@ export function mailboxIndex(req, res) {
   );
 }
 
-export function mailboxItem(req, res, { params, url }) {
-  guard();
+export function mailboxItem(req, res, { actor, params, url }) {
+  guard(actor);
   const mail = getMail(params.id);
   if (!mail) throw notFound('Письмо не найдено');
 

@@ -39,6 +39,11 @@ export function authorLabel(signalId) {
   return store.getState().authorLabels?.[signalId] ?? '—';
 }
 
+/** Сектор последнего сигнала текущего пользователя — для автоподстановки. */
+export function lastSector() {
+  return store.getState().lastSector ?? null;
+}
+
 /** Статистика решения задач по всей платформе (только для сотрудников). */
 export function resolutionStats() {
   return store.getState().stats ?? null;

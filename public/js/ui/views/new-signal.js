@@ -12,18 +12,54 @@
 import { html } from '../../core/utils.js';
 import { validateSignalInput } from '/shared/validation.js';
 import { currentActor, isContractor, isSuperadmin } from '../../domain/session.js';
-import { createSignal } from '../../domain/signals.js';
+import { createSignal, lastSector } from '../../domain/signals.js';
 import { upload } from '../../domain/files.js';
 import { fileField, bindFileField } from '../components.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
 
-/** Черновик переживает уход со страницы и возврат назад. */
-const draft = { sector: '', description: '' };
+/**
+ * ЧЕРНОВИК ФОРМЫ.
+ *
+ * Хранится в localStorage под ключом с идентификатором учетной записи —
+ * поэтому недописанная проблема переживает не только уход со страницы,
+ * но и перезагрузку, и при этом не всплывает у другого пользователя,
+ * вошедшего в том же браузере. Вернулся в свой аккаунт — текст на месте.
+ */
+const DRAFT_PREFIX = 'sms-draft-signal:';
 
-function resetDraft() {
-  draft.sector = '';
-  draft.description = '';
+const draftKey = (actor) => `${DRAFT_PREFIX}${actor.id}`;
+
+const EMPTY_DRAFT = { sector: '', description: '' };
+
+function readDraft(actor) {
+  if (!actor.id) return { ...EMPTY_DRAFT };
+  try {
+    const stored = JSON.parse(localStorage.getItem(draftKey(actor)) ?? 'null');
+    if (!stored || typeof stored !== 'object') return { ...EMPTY_DRAFT };
+    return { sector: String(stored.sector ?? ''), description: String(stored.description ?? '') };
+  } catch {
+    return { ...EMPTY_DRAFT }; // приватный режим или битое значение — начинаем с чистого
+  }
+}
+
+function writeDraft(actor, draft) {
+  if (!actor.id) return;
+  try {
+    // Пустой черновик не храним: иначе он перебивал бы автоподстановку сектора.
+    if (!draft.sector.trim() && !draft.description.trim()) localStorage.removeItem(draftKey(actor));
+    else localStorage.setItem(draftKey(actor), JSON.stringify(draft));
+  } catch {
+    /* сохранять некуда — черновик проживет до ухода со страницы */
+  }
+}
+
+function clearDraft(actor) {
+  try {
+    localStorage.removeItem(draftKey(actor));
+  } catch {
+    /* нечего чистить */
+  }
 }
 
 const FIELDS = [
@@ -46,6 +82,11 @@ export const newSignalView = {
 
   render() {
     const actor = currentActor();
+    const draft = readDraft(actor);
+
+    // Сектор подставляется из прошлого сигнала этого же аккаунта и только
+    // в пустое поле: свой текст и сохраненный черновик подстановка не трогает.
+    if (!draft.sector) draft.sector = lastSector() ?? '';
 
     const fields = FIELDS.map((field) => {
       const control =
@@ -99,6 +140,11 @@ export const newSignalView = {
 
     const controls = new Map(FIELDS.map((field) => [field.name, form.querySelector(`[name="${field.name}"]`)]));
 
+    // Черновик берется из полей, а не из хранилища заново: в поле сектора уже
+    // может стоять подстановка из прошлого сигнала, и перечитывание затерло бы
+    // ее пустым значением при первом же вводе описания.
+    const draft = Object.fromEntries([...controls].map(([name, control]) => [name, control.value]));
+
     function showErrors(errors, message = 'Заполните подсвеченные поля — сигнал не отправлен.') {
       for (const field of FIELDS) {
         const wrapper = form.querySelector(`[data-field="${field.name}"]`);
@@ -117,6 +163,7 @@ export const newSignalView = {
     controls.forEach((control, name) => {
       control.addEventListener('input', () => {
         draft[name] = control.value;
+        writeDraft(actor, draft);
         form.querySelector(`[data-field="${name}"]`).classList.remove('is-invalid');
         form.querySelector(`[data-error-for="${name}"]`).textContent = '';
         summary.hidden = true;
@@ -153,7 +200,7 @@ export const newSignalView = {
         const signal = await createSignal({ ...payload, fileIds: uploaded.map((file) => file.id) });
 
         submitted = true;
-        resetDraft();
+        clearDraft(actor);
         attachments.clear();
         showToast('Сигнал создан и отправлен на рассмотрение', 'success');
 
@@ -178,6 +225,7 @@ export const newSignalView = {
       controls.forEach((control, name) => {
         draft[name] = control.value;
       });
+      writeDraft(actor, draft);
     };
   },
 };

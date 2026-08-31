@@ -50,6 +50,7 @@ const routes = [
 
   ['POST', '/api/admins', api.createAdmin],
   ['PUT', '/api/users/:id/categories', api.updateUserCategories],
+  ['PUT', '/api/users/:id/role', api.updateUserRole],
   ['DELETE', '/api/users/:id', api.deleteUser],
   ['PUT', '/api/notifications', api.updateNotify],
   ['POST', '/api/verification/resend', api.resendVerification],

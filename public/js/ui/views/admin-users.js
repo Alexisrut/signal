@@ -9,7 +9,14 @@
 import { html, formatDateTime } from '../../core/utils.js';
 import { ACCOUNT_TYPES, CATEGORIES, ROLE, ROLE_LABEL, accountType, categoryShort, isCategoryScopedRole } from '/shared/constants.js';
 import { validateAdminInput } from '/shared/validation.js';
-import { currentActor, listUsers, createAdmin, updateCategories, deleteUser } from '../../domain/session.js';
+import {
+  currentActor,
+  listUsers,
+  createAdmin,
+  updateCategories,
+  updateUserRole,
+  deleteUser,
+} from '../../domain/session.js';
 import { checkbox, radioGroup } from '../components.js';
 import { confirmDialog } from '../modal.js';
 import { showToast } from '../chrome.js';
@@ -21,6 +28,21 @@ const FIELDS = [
   { name: 'password', label: 'Пароль', type: 'password', placeholder: 'минимум 6 символов', autocomplete: 'new-password' },
   { name: 'password2', label: 'Повтор пароля', type: 'password', placeholder: 'повторите пароль', autocomplete: 'new-password' },
 ];
+
+/**
+ * Единственный разрешенный переход для этой роли — или null, если менять
+ * тип нельзя. Список намеренно короткий: администратора можно повысить
+ * до главного и понизить обратно, руководителя — не трогать вовсе.
+ */
+function promotionFor(role) {
+  if (role === ROLE.ADMIN) {
+    return { to: ROLE.SUPERADMIN, label: 'Повысить', title: 'Сделать главным администратором' };
+  }
+  if (role === ROLE.SUPERADMIN) {
+    return { to: ROLE.ADMIN, label: 'Понизить', title: 'Вернуть роль администратора' };
+  }
+  return null;
+}
 
 /** Набор категорий строкой — для колонки таблицы. */
 function categorySummary(user) {
@@ -60,7 +82,17 @@ export const adminUsersView = {
             ${[
               isCategoryScopedRole(user.role)
                 ? html`<button class="btn btn--ghost btn--sm" data-edit="${user.id}">Настроить</button>`
-                : html`<span class="table__sub">полный доступ</span>`,
+                : '',
+            ]}
+            ${[
+              // Тип меняется только между администратором и главным:
+              // роль руководителя завязана на категории и назначения,
+              // и переключать ее на лету система не дает.
+              user.id !== actor.id && promotionFor(user.role)
+                ? html`<button class="btn btn--ghost btn--sm" data-role-change="${user.id}"
+                    data-next="${promotionFor(user.role).to}" data-name="${user.displayName}"
+                    title="${promotionFor(user.role).title}">${promotionFor(user.role).label}</button>`
+                : '',
             ]}
             ${[
               user.id === actor.id
@@ -257,6 +289,29 @@ export const adminUsersView = {
     // Правка набора категорий у существующей учетной записи — прямо в строке таблицы.
     root.querySelectorAll('[data-edit]').forEach((button) => {
       button.addEventListener('click', () => openCategoryEditor(button, ctx));
+    });
+
+    root.querySelectorAll('[data-role-change]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const next = ROLE_LABEL[button.dataset.next] ?? button.dataset.next;
+        const confirmed = await confirmDialog({
+          title: 'Смена типа аккаунта',
+          message: `Вы точно хотите поменять тип аккаунта? «${button.dataset.name}» станет: ${next}.`,
+          confirmLabel: 'Поменять тип',
+          tone: 'primary',
+        });
+        if (!confirmed) return;
+
+        button.disabled = true;
+        try {
+          const user = await updateUserRole(button.dataset.roleChange, button.dataset.next);
+          showToast(`«${button.dataset.name}» теперь ${ROLE_LABEL[user.role].toLowerCase()}`, 'success');
+          ctx.refresh();
+        } catch (error) {
+          button.disabled = false;
+          showToast(error.message, 'error');
+        }
+      });
     });
 
     root.querySelectorAll('[data-delete]').forEach((button) => {

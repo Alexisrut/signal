@@ -5,7 +5,7 @@
 
 import * as store from './data/store.js';
 import { UI_TICK_MS } from '/shared/constants.js';
-import { isAuthenticated, isContractor, isStaff, isSuperadmin, currentActor } from './domain/session.js';
+import { currentActor, hasSignalsTab, isAuthenticated, isContractor, isStaff, isSuperadmin } from './domain/session.js';
 import { applyTheme } from './core/theme.js';
 
 import { createRouter } from './ui/router.js';
@@ -36,6 +36,13 @@ function requireContractor() {
   const redirect = requireAuth();
   if (redirect) return redirect;
   return isContractor() ? null : '/admin';
+}
+
+/** Раздел «Мои сигналы» существует не у всех — см. hasSignalsTab. */
+function requireSignalsTab() {
+  const redirect = requireAuth();
+  if (redirect) return redirect;
+  return hasSignalsTab() ? null : '/admin';
 }
 
 /** Сообщить о проблеме может любой участник системы — и подрядчик, и сотрудник. */
@@ -86,9 +93,9 @@ const routes = [
   { path: '/account', view: accountView, guard: requireAuth },
 
   { path: '/new', view: newSignalView, guard: requireReporter },
-  // «Мои сигналы» есть у всех: у подрядчика это его обращения,
-  // у сотрудника — задачи, за которые он отвечает.
-  { path: '/my', view: mySignalsView, guard: requireAuth },
+  // «Мои сигналы» — у подрядчика его обращения, у руководителя его задачи.
+  // Администраторы кураторами не бывают, поэтому раздела у них нет вовсе.
+  { path: '/my', view: mySignalsView, guard: requireSignalsTab },
   { path: '/my/:id', view: mySignalView, guard: requireContractor },
   { path: '/my/:id/edit', view: editSignalView, guard: requireContractor },
 

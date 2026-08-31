@@ -14,7 +14,6 @@ import {
 } from '/shared/constants.js';
 import { validatePasswordChange } from '/shared/validation.js';
 import { currentTheme, setTheme } from '../../core/theme.js';
-import * as store from '../../data/store.js';
 import {
   changePassword,
   currentActor,
@@ -60,7 +59,6 @@ export const accountView = {
   render() {
     const actor = currentActor();
     const notify = myNotify(actor);
-    const devInbox = store.getState().meta?.mailMode === 'dev-inbox';
     const theme = currentTheme();
 
     const passwordFields = PASSWORD_FIELDS.map(
@@ -101,14 +99,6 @@ export const accountView = {
                   : html`<button class="btn btn--secondary btn--sm" data-action="verify">Подтвердить почту</button>`,
               ]}
             </div>
-            ${[
-              !actor.isEmailVerified && devInbox
-                ? html`<p class="field__hint">
-                    Письмо появится в
-                    <a class="link" href="/dev/mailbox" target="_blank" rel="noopener">dev-инбоксе</a>.
-                  </p>`
-                : '',
-            ]}
           </div>
 
           <div class="panel">
@@ -183,11 +173,8 @@ function bindVerify(root) {
     button.disabled = true;
 
     try {
-      const { delivery } = await resendVerification();
-      showToast(
-        delivery.mode === 'dev-inbox' ? 'Письмо создано — смотрите dev-инбокс' : 'Письмо с ссылкой отправлено',
-        'success',
-      );
+      await resendVerification();
+      showToast('Письмо со ссылкой подтверждения отправлено', 'success');
     } catch (error) {
       showToast(error.message, 'error');
     } finally {

@@ -76,13 +76,10 @@ export const forgotView = {
       button.disabled = true;
 
       try {
-        const result = await requestPasswordReset(control.value);
+        await requestPasswordReset(control.value);
         summary.hidden = false;
         summary.classList.remove('form__hint--error');
-        summary.textContent =
-          result.mailMode === 'dev-inbox'
-            ? 'Если такая учетная запись есть, письмо уже в dev-инбоксе (/dev/mailbox).'
-            : 'Если такая учетная запись есть, письмо со ссылкой отправлено на ее адрес.';
+        summary.textContent = 'Если такая учетная запись есть, письмо со ссылкой отправлено на ее адрес.';
       } catch (error) {
         button.disabled = false;
         summary.hidden = false;

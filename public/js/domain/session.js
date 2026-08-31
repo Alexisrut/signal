@@ -55,6 +55,8 @@ export function isEmailVerified(actor = currentActor()) {
  */
 export function hasSignalsTab(actor = currentActor()) {
   if (!isAuthenticated(actor)) return false;
+  // Администраторы кураторами не бывают — раздел им пустой, и в меню его нет.
+  if (isAdmin(actor)) return false;
   return actor.hasOwnSignals === true || (store.getState().mySignals ?? []).length > 0;
 }
 
@@ -105,6 +107,12 @@ export async function createAdmin(input) {
 
 export async function updateCategories(userId, categories) {
   const result = await api.updateUserCategories(userId, categories);
+  await store.refresh();
+  return result.user;
+}
+
+export async function updateUserRole(userId, role) {
+  const result = await api.updateUserRole(userId, role);
   await store.refresh();
   return result.user;
 }

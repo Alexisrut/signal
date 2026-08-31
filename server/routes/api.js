@@ -88,6 +88,8 @@ export function getState(req, res, { actor }) {
     assignables: staff ? usersService.listAssignables() : null,
     // Статистика решения считается по всей платформе, а не по видимым категориям.
     stats: staff ? signalsService.resolutionStats() : null,
+    // Сектор прошлого сигнала — форма создания подставит его в пустое поле.
+    lastSector: signalsService.lastSectorOf(actor.id),
     meta: meta(),
   };
 
@@ -154,16 +156,16 @@ export async function distributeSignal(req, res, { actor, params }) {
   sendJson(res, 200, { signal });
 }
 
-/** Выдать задачу выбранным сотрудникам и приложить заметку. */
+/** Выдать задачу выбранным руководителям и приложить заметку. */
 export async function assignPeople(req, res, { actor, params }) {
-  requireStaff(actor);
+  requireSuperadmin(actor);
   const body = await readJsonBody(req);
   sendJson(res, 200, { signal: signalsService.assignPeople(params.id, body.assignees, actor, body.note) });
 }
 
-/** Принять сигнал в работу (`{assign: true}`) или снять с себя (`{assign: false}`). */
+/** Снять куратора с задачи (`{assign: false}`) — состав ведет главный администратор. */
 export async function assignSignal(req, res, { actor, params }) {
-  requireStaff(actor);
+  requireSuperadmin(actor);
   const body = await readJsonBody(req);
   sendJson(res, 200, { signal: signalsService.setAssignee(params.id, actor, body.assign !== false, body.userId) });
 }
@@ -258,6 +260,14 @@ export async function updateUserCategories(req, res, { actor, params }) {
 export function deleteUser(req, res, { actor, params }) {
   requireSuperadmin(actor);
   sendJson(res, 200, { deleted: usersService.deleteUser(params.id, actor) });
+}
+
+/** Повышение администратора до главного и обратное понижение. */
+export async function updateUserRole(req, res, { actor, params }) {
+  requireSuperadmin(actor);
+  const body = await readJsonBody(req);
+  const user = usersService.changeRole(params.id, body.role, actor);
+  sendJson(res, 200, { user: { id: user.id, login: user.login, role: user.role } });
 }
 
 /* ------------------------------ личный кабинет -------------------------------- */

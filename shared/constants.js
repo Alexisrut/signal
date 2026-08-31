@@ -23,6 +23,9 @@ export const ROLE_LABEL = {
 /** Администраторы обеих разновидностей. */
 export const isAdminRole = (role) => role === ROLE.ADMIN || role === ROLE.SUPERADMIN;
 
+/** Главный администратор — единственный, кто ведет состав кураторов и роли. */
+export const isSuperadminRole = (role) => role === ROLE.SUPERADMIN;
+
 /**
  * Сотрудники платформы: администраторы и руководители. Им доступны дашборд,
  * карточки сигналов и работа со статусами; отличие руководителя от
@@ -220,8 +223,8 @@ export const HISTORY_KIND_LABEL = {
   [HISTORY_KIND.CREATE]: 'Создано',
   [HISTORY_KIND.STATUS]: 'Смена статуса',
   [HISTORY_KIND.EDIT]: 'Редактирование',
-  [HISTORY_KIND.ASSIGN]: 'Принято в работу',
-  [HISTORY_KIND.RELEASE]: 'Снято с исполнителя',
+  [HISTORY_KIND.ASSIGN]: 'Назначен куратор',
+  [HISTORY_KIND.RELEASE]: 'Куратор снят',
   [HISTORY_KIND.CATEGORY]: 'Распределение',
   [HISTORY_KIND.NOTE]: 'Заметка',
   [HISTORY_KIND.REOPEN]: 'Возобновление',

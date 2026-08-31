@@ -2,7 +2,7 @@
 
 import { html, formatDateTime } from '../../core/utils.js';
 import { STATUS, STATUS_META, ESCALATION_MS, CATEGORIES, categoryLabel } from '/shared/constants.js';
-import { canAssign, canAssignOthers, canEdit, canReopen, canTransition, isActive, isAssignedTo } from '/shared/state-machine.js';
+import { canAssignOthers, canEdit, canReopen, canTransition, isActive } from '/shared/state-machine.js';
 import { currentActor, isSuperadmin } from '../../domain/session.js';
 import {
   findAny,
@@ -28,6 +28,7 @@ import {
   resolutionTimer,
 } from '../components.js';
 import { openAssignDialog } from '../assign-dialog.js';
+import { confirmDialog } from '../modal.js';
 import { showToast } from '../chrome.js';
 
 export const adminSignalView = {
@@ -53,24 +54,16 @@ export const adminSignalView = {
     const canResolve = canTransition(signal, STATUS.GREEN, actor).allowed;
     const canReject = canTransition(signal, STATUS.GRAY, actor).allowed;
     const canEscalate = canTransition(signal, STATUS.RED, actor).allowed;
-    const takeVerdict = canAssign(signal, actor);
-    const mine = isAssignedTo(signal, actor.id);
     const active = isActive(signal.status);
     const reopenVerdict = canReopen(signal, actor);
-    // Раздача задач — работа администратора; руководитель ведет свои,
-    // но состав кураторов не меняет.
+    // Состав кураторов целиком за главным администратором: остальные роли
+    // задачу ведут, но не раздают и никого с нее не снимают.
     const distributes = canAssignOthers(signal, actor).allowed;
 
+    // Кураторами занимается только главный администратор через окно назначения:
+    // брать сигнал на себя и выходить из него вручную больше нельзя никому.
     const actions = active
       ? html`
-          ${[
-            mine
-              ? html`<button class="btn btn--ghost" data-release="${actor.id}">Выйти из работы</button>`
-              : html`<button class="btn btn--primary" data-assign="true" ${[takeVerdict.allowed ? '' : 'disabled']}
-                  title="${takeVerdict.allowed ? 'Взять сигнал на себя' : takeVerdict.reason}">
-                  Принять в работу
-                </button>`,
-          ]}
           <button class="btn btn--success" data-status="${STATUS.GREEN}" ${[canResolve ? '' : 'disabled']}>
             Проблема решена
           </button>
@@ -221,26 +214,13 @@ export const adminSignalView = {
     // Открытие карточки — это и есть «прочитано»: индикатор новых изменений гаснет.
     if (unreadCount(ctx.params.id)) markSeen(ctx.params.id).catch(() => {});
 
-    root.querySelectorAll('[data-assign]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          const signal = await setAssignee(ctx.params.id, true);
-          showToast(`Исполнителей по сигналу: ${signal.assignees.length}`, 'success');
-        } catch (error) {
-          button.disabled = false;
-          showToast(error.message, 'error');
-        }
-      });
-    });
-
-    // Снять можно и себя, и коллегу — идентификатор берется из кнопки.
+    // Снять куратора с задачи — идентификатор берется из кнопки в списке.
     root.querySelectorAll('[data-release]').forEach((button) => {
       button.addEventListener('click', async () => {
         button.disabled = true;
         try {
           await setAssignee(ctx.params.id, false, button.dataset.release);
-          showToast('Исполнитель снят', 'success');
+          showToast('Куратор снят с задачи', 'success');
         } catch (error) {
           button.disabled = false;
           showToast(error.message, 'error');
@@ -284,6 +264,17 @@ export const adminSignalView = {
 
     root.querySelectorAll('[data-status]').forEach((button) => {
       button.addEventListener('click', async () => {
+        // Красный статус эскалирует проблему и рассылает письма — спрашиваем.
+        if (button.dataset.status === STATUS.RED) {
+          const confirmed = await confirmDialog({
+            title: 'Перевод в красный статус',
+            message: 'Вы точно хотите перевести сигнал в красный статус?',
+            confirmLabel: 'Перевести в красный',
+            tone: 'primary',
+          });
+          if (!confirmed) return;
+        }
+
         button.disabled = true;
         try {
           await changeStatus(ctx.params.id, button.dataset.status);

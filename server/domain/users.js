@@ -21,6 +21,7 @@ import { deliveryMode } from '../mail/transport.js';
 
 import {
   ROLE,
+  ROLE_LABEL,
   ROLE_RANK,
   ACCOUNT_TYPE_IDS,
   CATEGORY_IDS,
@@ -224,6 +225,49 @@ export function updateCategories(userId, categories, actor) {
   sql.run(`UPDATE users SET categories = ? WHERE id = ?`, [JSON.stringify(next), userId]);
 
   publish('user', { id: userId, categories: next });
+  return findUser(userId);
+}
+
+/**
+ * Смена типа учетной записи.
+ *
+ * Разрешены ровно два перехода: Администратор → Главный администратор и
+ * обратно. Все остальное заблокировано намеренно — роль руководителя связана
+ * с курируемыми категориями и назначениями на задачи, и «перекинуть» человека
+ * туда или оттуда одним кликом значило бы тихо порвать эти связи.
+ * Такие переводы делаются созданием новой учетной записи.
+ */
+const ROLE_SWITCH = [
+  { from: ROLE.ADMIN, to: ROLE.SUPERADMIN },
+  { from: ROLE.SUPERADMIN, to: ROLE.ADMIN },
+];
+
+export function canSwitchRole(from, to) {
+  return ROLE_SWITCH.some((rule) => rule.from === from && rule.to === to);
+}
+
+export function changeRole(userId, role, actor) {
+  if (actor?.role !== ROLE.SUPERADMIN) {
+    throw forbidden('Менять тип учетной записи может только главный администратор');
+  }
+
+  const user = findUser(userId);
+  if (!user) throw notFound('Учетная запись не найдена');
+  if (user.id === actor.id) throw badRequest('Нельзя менять тип собственной учетной записи');
+  if (user.role === role) return user;
+
+  if (!canSwitchRole(user.role, role)) {
+    throw badRequest(
+      `Переход «${ROLE_LABEL[user.role] ?? user.role}» → «${ROLE_LABEL[role] ?? role}» не разрешен: ` +
+        'менять можно только между администратором и главным администратором',
+    );
+  }
+
+  // Главному администратору категории не нужны — он видит все. Обратный
+  // перевод оставляет пустой набор: какие категории открыть, решает человек.
+  sql.run(`UPDATE users SET role = ?, categories = ? WHERE id = ?`, [role, JSON.stringify([]), userId]);
+
+  publish('user', { id: userId, role });
   return findUser(userId);
 }
 
