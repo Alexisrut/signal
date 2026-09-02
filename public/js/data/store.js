@@ -63,6 +63,8 @@ export function refresh() {
         authorLabels: next.authorLabels ?? {},
         unread: next.unread ?? {},
       };
+      // Вход и выход меняют право на поток изменений — держим его в согласии.
+      syncEvents();
       notify({ source: 'refresh' });
       return state;
     })
@@ -79,9 +81,17 @@ export function refresh() {
   return pendingRefresh;
 }
 
-/** Подписка на серверный поток изменений. */
+/**
+ * Подписка на серверный поток изменений.
+ *
+ * Поток открыт только вошедшим: гостю сервер отвечает 401, и подключаться
+ * ему незачем — EventSource бился бы в закрытую дверь по кругу и держал
+ * значок «офлайн» на форме входа.
+ */
 function connectEvents() {
-  source?.close();
+  disconnectEvents();
+  if (!state.actor) return;
+
   source = new EventSource('/api/events');
 
   source.addEventListener('change', () => refresh());
@@ -92,12 +102,25 @@ function connectEvents() {
 
   source.addEventListener('error', () => {
     // EventSource переподключается сам; фиксируем разрыв только когда он окончателен.
-    if (source.readyState === EventSource.CLOSED) {
+    if (source?.readyState === EventSource.CLOSED) {
       state = { ...state, offline: true };
       notify({ source: 'offline' });
-      setTimeout(connectEvents, 3000);
+      // Сессия могла просто закончиться — перед новой попыткой перечитываем
+      // состояние, и если пользователь уже вышел, поток не поднимется.
+      setTimeout(() => refresh().then(syncEvents), 3000);
     }
   });
+}
+
+function disconnectEvents() {
+  source?.close();
+  source = null;
+}
+
+/** Держит поток открытым ровно пока есть сессия: вход открывает, выход закрывает. */
+function syncEvents() {
+  if (state.actor && !source) connectEvents();
+  else if (!state.actor && source) disconnectEvents();
 }
 
 export async function init() {

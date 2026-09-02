@@ -3,6 +3,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { IS_HTTPS, TRUST_PROXY } from './config.js';
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -26,6 +28,10 @@ export class HttpError extends Error {
 
 export function badRequest(message) {
   return new HttpError(400, message);
+}
+
+export function unauthorized(message = 'Требуется вход в систему') {
+  return new HttpError(401, message);
 }
 
 export function forbidden(message) {
@@ -111,6 +117,9 @@ export function parseCookies(req) {
 export function appendCookie(res, name, value, { maxAge, httpOnly = true } = {}) {
   const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/', 'SameSite=Lax'];
   if (httpOnly) parts.push('HttpOnly');
+  // Под HTTPS кука не должна уезжать по открытому каналу: без Secure любой
+  // случайный переход на http:// отдал бы сессию в чужие руки.
+  if (IS_HTTPS) parts.push('Secure');
   if (maxAge !== undefined) parts.push(`Max-Age=${Math.floor(maxAge / 1000)}`);
 
   const existing = res.getHeader('Set-Cookie');
@@ -124,8 +133,12 @@ export function clearCookie(res, name) {
 
 /** Отдача статического файла с защитой от выхода за пределы каталога. */
 export function serveStatic(res, rootDir, relativePath) {
-  const filePath = path.resolve(rootDir, relativePath);
-  if (!filePath.startsWith(path.resolve(rootDir))) {
+  const root = path.resolve(rootDir);
+  const filePath = path.resolve(root, relativePath);
+
+  // Сравнение с разделителем на конце обязательно: простое startsWith пустило бы
+  // соседний каталог с тем же префиксом («/app/public» и «/app/public-secrets»).
+  if (filePath !== root && !filePath.startsWith(root + path.sep)) {
     sendText(res, 403, 'Forbidden');
     return true;
   }
@@ -151,4 +164,50 @@ export function serveStatic(res, rootDir, relativePath) {
 export function contentDisposition(filename) {
   const fallback = String(filename).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/* ----------------------------- защитные заголовки ----------------------------- */
+
+/**
+ * Базовые заголовки безопасности на каждый ответ.
+ *
+ * CSP оставляет script-src 'unsafe-inline': в index.html два инлайновых скрипта —
+ * установка темы до отрисовки и сторож загрузки, который обязан выполниться
+ * даже когда основной модуль не загрузился. Остальные директивы при этом
+ * работают в полную силу: чужие источники, фреймы и подмена <base> закрыты.
+ */
+export function setSecurityHeaders(res) {
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "connect-src 'self'",
+      "form-action 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+    ].join('; '),
+  );
+
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), interest-cohort=()');
+
+  if (IS_HTTPS) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+}
+
+/** Адрес клиента для ограничения частоты запросов. */
+export function clientIp(req) {
+  if (TRUST_PROXY) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) return String(forwarded).split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress ?? 'unknown';
 }

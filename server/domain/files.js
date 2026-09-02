@@ -74,6 +74,14 @@ export function getFileRow(id) {
   return sql.get(`SELECT * FROM files WHERE id = ?`, [id]);
 }
 
+/**
+ * К каким сущностям привязан файл. Нужно для проверки доступа: право на файл
+ * выводится из права на сигнал, к которому он приложен, а не из знания ссылки.
+ */
+export function listFileOwners(fileId) {
+  return sql.all(`SELECT entity_type, entity_id FROM attachments WHERE file_id = ?`, [fileId]);
+}
+
 export function openFileStream(id) {
   const row = getFileRow(id);
   if (!row) throw notFound('Файл не найден');
@@ -81,13 +89,20 @@ export function openFileStream(id) {
   return { row, stream: fs.createReadStream(row.storage_path) };
 }
 
-/** Привязывает ранее загруженные файлы к сигналу или задаче. */
-export function attachFiles(entityType, entityId, fileIds = []) {
+/**
+ * Привязывает ранее загруженные файлы к сигналу или задаче.
+ *
+ * Прикрепить можно только то, что загрузил сам: иначе угаданный или
+ * подсмотренный идентификатор чужого файла позволял бы подтянуть его
+ * к своему сигналу и тем самым открыть себе доступ на чтение.
+ */
+export function attachFiles(entityType, entityId, fileIds = [], actor = null) {
   const unique = [...new Set(fileIds.filter(Boolean))].slice(0, 20);
 
   unique.forEach((fileId, index) => {
-    const exists = sql.get(`SELECT id FROM files WHERE id = ?`, [fileId]);
+    const exists = sql.get(`SELECT id, uploaded_by FROM files WHERE id = ?`, [fileId]);
     if (!exists) throw badRequest('Один из прикрепленных файлов не найден');
+    if (actor && exists.uploaded_by !== actor.id) throw badRequest('Можно прикреплять только свои загруженные файлы');
 
     sql.run(
       `INSERT OR IGNORE INTO attachments (entity_type, entity_id, file_id, position)

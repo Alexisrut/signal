@@ -49,7 +49,17 @@ export function sseHandler(req, res) {
  */
 export function publish(type, payload = {}) {
   revision += 1;
-  const message = `event: change\ndata: ${JSON.stringify({ type, rev: revision, ...payload })}\n\n`;
+
+  /*
+   * Наружу уходит только номер ревизии. Полезная нагрузка (идентификаторы
+   * сигналов, статусы, категории) остается на сервере: поток общий для всех
+   * подключенных, и подрядчик получал бы в нем сводку по чужим сигналам.
+   * Клиенту хватает сигнала «что-то изменилось» — дальше он перечитывает
+   * /api/state, который отфильтрован под его права.
+   */
+  void type;
+  void payload;
+  const message = `event: change\ndata: ${JSON.stringify({ rev: revision })}\n\n`;
 
   for (const client of [...clients]) {
     try {

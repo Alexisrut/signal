@@ -49,8 +49,29 @@ export const DB_PATH = path.join(DATA_DIR, 'signal-monitor.db');
 
 export const PORT = Number(process.env.PORT) || 5175;
 
+/**
+ * Интерфейс, на котором слушает сервер.
+ *
+ * По умолчанию — только петля: наружу приложение смотрит через nginx, и порт
+ * 5175 не должен быть доступен из интернета в обход TLS. Если сервер живет
+ * в контейнере и обращаться к нему нужно снаружи — HOST=0.0.0.0.
+ */
+export const HOST = process.env.HOST || '127.0.0.1';
+
 /** Базовый URL приложения — подставляется в ссылки внутри писем. */
 export const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+
+/** Работает ли приложение по HTTPS — отсюда берутся флаг Secure и HSTS. */
+export const IS_HTTPS = APP_URL.startsWith('https://');
+
+/**
+ * Доверять ли заголовку X-Forwarded-For при определении адреса клиента.
+ *
+ * Включать ТОЛЬКО когда перед приложением стоит обратный прокси и порт
+ * приложения закрыт снаружи: иначе любой сможет подделать свой адрес
+ * и обойти ограничение частоты запросов.
+ */
+export const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 
 const smtpUser = process.env.SMTP_USER || '';
 

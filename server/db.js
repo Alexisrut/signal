@@ -266,17 +266,26 @@ migrate();
 // Индекс создается после миграций: на старой базе колонки category еще нет.
 sql.exec(`CREATE INDEX IF NOT EXISTS idx_signals_category ON signals(category)`);
 
-/** Первичный посев: главный администратор, если в системе нет ни одного. */
+/**
+ * Первичный посев: главный администратор, если в системе нет ни одного.
+ *
+ * Логин, почта и пароль берутся из окружения: на боевом сервере учетная запись
+ * заводится сразу со своим паролем, и опубликованный в README `admin/admin123`
+ * не живет на открытом домене ни минуты. Без переменных подставляются
+ * демонстрационные значения — сервер при старте скажет об этом вслух.
+ */
 export function seedDefaultAdmin() {
   const { n } = sql.get(`SELECT COUNT(*) AS n FROM users WHERE role IN (?, ?)`, [ROLE.ADMIN, ROLE.SUPERADMIN]);
   if (n > 0) return null;
 
+  const password = process.env.DEFAULT_ADMIN_PASSWORD || DEFAULT_ADMIN.password;
   const salt = randomSalt();
   const admin = {
     id: uid('adm'),
-    login: DEFAULT_ADMIN.login,
+    login: process.env.DEFAULT_ADMIN_LOGIN || DEFAULT_ADMIN.login,
     email: process.env.DEFAULT_ADMIN_EMAIL || DEFAULT_ADMIN.email,
     displayName: DEFAULT_ADMIN.displayName,
+    isDefaultPassword: password === DEFAULT_ADMIN.password,
   };
 
   sql.run(
@@ -290,7 +299,7 @@ export function seedDefaultAdmin() {
       admin.login,
       admin.email,
       salt,
-      hashPassword(DEFAULT_ADMIN.password, salt),
+      hashPassword(password, salt),
       JSON.stringify([]),
       JSON.stringify(DEFAULT_NOTIFY),
       Date.now(),

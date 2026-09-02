@@ -1,0 +1,49 @@
+# Служба приложения.
+#
+#   sudo cp deploy/signal-monitor.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now signal-monitor
+#   journalctl -u signal-monitor -f
+#
+# Настройки берутся из .env в корне проекта — приложение читает его само,
+# поэтому EnvironmentFile здесь не нужен (и не ломается на значениях
+# со скобками и пробелами вроде MAIL_FROM).
+
+[Unit]
+Description=Signal Monitor — система мониторинга сигналов
+Documentation=https://github.com/Alexisrut/signal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=visuser
+Group=visuser
+WorkingDirectory=/home/visuser/signal-monitor
+ExecStart=/usr/bin/node server/index.js
+
+# Падение по любой причине — поднять заново. Счетчики ограничения частоты
+# живут в памяти процесса и при перезапуске обнуляются: это осознанный размен.
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=signal-monitor
+
+# Процессу нужны только свои данные: база, вложения, dev-инбокс.
+# Каталог проекта остается доступным на чтение, всё остальное — закрыто.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/signal-monitor
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

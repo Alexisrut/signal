@@ -9,6 +9,8 @@ import { SMTP_CONFIGURED, APP_URL } from '../config.js';
 import * as signalsService from '../domain/signals.js';
 import * as usersService from '../domain/users.js';
 
+import { guard, reset as resetLimit, LIMITS } from '../ratelimit.js';
+
 import { ESCALATION_MS, ROLE } from '../../shared/constants.js';
 
 /** Гость получает только meta — этого достаточно, чтобы показать вход и регистрацию. */
@@ -47,6 +49,14 @@ function publicActor(actor) {
   return { ...base, categories: actor.categories };
 }
 
+/**
+ * Сигнал в ответе. Подрядчику отдается срезанная карточка — без заметки
+ * кураторам и без ленты внутренних действий.
+ */
+function signalFor(actor, signal) {
+  return isContractor(actor) ? signalsService.forContractor(signal) : signal;
+}
+
 function meta() {
   return {
     rev: currentRevision(),
@@ -78,7 +88,9 @@ export function getState(req, res, { actor }) {
     // «Мои сигналы» у подрядчика — то, что он подал; у сотрудника — то,
     // за что он лично отвечает. Изоляция подрядчиков живет здесь:
     // чужие сигналы просто не попадают в ответ.
-    mySignals: isContractor(actor) ? signalsService.listByAuthor(actor.id) : signalsService.listAssignedTo(actor.id),
+    mySignals: isContractor(actor)
+      ? signalsService.listByAuthor(actor.id).map(signalsService.forContractor)
+      : signalsService.listAssignedTo(actor.id),
     // Администратор и руководитель видят только разрешенные им категории.
     allSignals: staff ? signalsService.listForAdmin(actor) : null,
     // Раздел «Распределение» существует только для главного администратора.
@@ -113,16 +125,18 @@ export async function createSignal(req, res, { actor }) {
   requireActor(actor);
   if (!isContractor(actor) && !isStaff(actor)) throw forbidden('Создавать сигналы может участник системы');
 
+  guard(req, 'signals', LIMITS.WRITE);
+
   const body = await readJsonBody(req);
   const signal = signalsService.createSignal(body, actor);
-  sendJson(res, 201, { signal });
+  sendJson(res, 201, { signal: signalFor(actor, signal) });
 }
 
 export async function changeSignalStatus(req, res, { actor, params }) {
   requireActor(actor);
   const body = await readJsonBody(req);
   const signal = signalsService.changeStatus(params.id, body.status, actor);
-  sendJson(res, 200, { signal });
+  sendJson(res, 200, { signal: signalFor(actor, signal) });
 }
 
 /** Вернуть закрытый сигнал в активную фазу — администратор или руководитель. */
@@ -136,13 +150,13 @@ export function getSignal(req, res, { actor, params }) {
   requireActor(actor);
   const signal = signalsService.getForActor(params.id, actor);
   if (!signal) throw notFound('Сигнал не найден');
-  sendJson(res, 200, { signal });
+  sendJson(res, 200, { signal: signalFor(actor, signal) });
 }
 
 export async function updateSignal(req, res, { actor, params }) {
   requireActor(actor);
   const body = await readJsonBody(req);
-  sendJson(res, 200, { signal: signalsService.updateSignal(params.id, body, actor) });
+  sendJson(res, 200, { signal: signalFor(actor, signalsService.updateSignal(params.id, body, actor)) });
 }
 
 /** Распределение сигнала по категории — раздел главного администратора. */
@@ -180,10 +194,16 @@ export async function seenSignal(req, res, { actor, params }) {
 
 /** Единая форма входа: логин подрядчика — название компании, у администратора — свой. */
 export async function login(req, res) {
+  // Счетчик стоит до проверки пароля: иначе перебор упирался бы только
+  // в скорость scrypt, а это тысячи попыток в минуту.
+  guard(req, 'login', LIMITS.LOGIN);
+
   const { login: userLogin, password } = await readJsonBody(req);
   const user = usersService.authenticate(userLogin, password);
   if (!user) throw new HttpError(401, 'Неверный логин или пароль');
 
+  // Свой человек вошел — счетчик неудач ему больше не мешает.
+  resetLimit(`login::${req.ip}`);
   createSession(res, user.id);
   sendJson(res, 200, { user: publicActor(user) });
 }
@@ -191,6 +211,7 @@ export async function login(req, res) {
 /** Самостоятельная регистрация подрядчика. */
 export async function register(req, res, { actor }) {
   if (actor) throw badRequest('Вы уже вошли в систему');
+  guard(req, 'signup', LIMITS.SIGNUP);
 
   const body = await readJsonBody(req);
   const user = usersService.registerContractor(body);
@@ -212,6 +233,7 @@ export function logout(req, res) {
  */
 export async function forgotPassword(req, res, { actor }) {
   if (actor) throw badRequest('Вы уже вошли в систему — пароль меняется в разделе «Аккаунт»');
+  guard(req, 'forgot', LIMITS.MAIL);
 
   const body = await readJsonBody(req);
   const result = await usersService.requestPasswordReset(body.identifier);
@@ -223,6 +245,7 @@ export function checkResetToken(req, res, { url }) {
 }
 
 export async function resetPassword(req, res) {
+  guard(req, 'reset', LIMITS.LOGIN);
   const body = await readJsonBody(req);
   const user = usersService.resetPassword(body.token, body);
   sendJson(res, 200, { ok: true, login: user.login });
@@ -274,6 +297,7 @@ export async function updateUserRole(req, res, { actor, params }) {
 
 export async function changePassword(req, res, { actor }) {
   requireActor(actor);
+  guard(req, 'password', LIMITS.LOGIN);
   const body = await readJsonBody(req);
   usersService.changePassword(actor.id, body);
 
@@ -292,6 +316,7 @@ export async function updateNotify(req, res, { actor }) {
 
 export async function resendVerification(req, res, { actor }) {
   requireActor(actor);
+  guard(req, 'verify', LIMITS.MAIL);
   if (actor.isEmailVerified) throw badRequest('Почта уже подтверждена');
 
   const delivery = await usersService.issueVerification(actor.id);

@@ -4,6 +4,20 @@ import { sendHtml } from '../http.js';
 import { createSession } from '../identity.js';
 import { verifyEmailToken } from '../domain/users.js';
 
+/**
+ * Экранирование обязательно: логин подрядчика — это название его компании,
+ * то есть строка, которую он придумывает сам. Без него страница подтверждения
+ * выполняла бы разметку, введенную при регистрации.
+ */
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function page({ title, tone, message, actions }) {
   const accent = tone === 'ok' ? '#35c46a' : '#f2543d';
   return `<!doctype html>
@@ -36,7 +50,7 @@ export function verifyEmail(req, res, { url }) {
       page({
         title: 'Ссылка не подошла',
         tone: 'error',
-        message: `${result.reason}. Войдите в систему и запросите новое письмо подтверждения.`,
+        message: `${escapeHtml(result.reason)}. Войдите в систему и запросите новое письмо подтверждения.`,
         actions: '<a class="btn btn--primary" href="/#/admin/login">К форме входа</a>',
       }),
     );
@@ -53,7 +67,9 @@ export function verifyEmail(req, res, { url }) {
     page({
       title: result.alreadyVerified ? 'Почта уже подтверждена' : 'Почта подтверждена',
       tone: 'ok',
-      message: `Учетная запись <b>${result.user.login}</b> (${result.user.email}) активна. Панель управления доступна.`,
+      message:
+        `Учетная запись <b>${escapeHtml(result.user.login)}</b> ` +
+        `(${escapeHtml(result.user.email)}) активна. Панель управления доступна.`,
       actions: '<a class="btn btn--primary" href="/#/admin">Открыть дашборд</a>',
     }),
   );

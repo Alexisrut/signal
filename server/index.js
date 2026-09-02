@@ -8,11 +8,11 @@
 
 import http from 'node:http';
 
-import { PORT, PUBLIC_DIR, SHARED_DIR, APP_URL } from './config.js';
+import { HOST, PORT, PUBLIC_DIR, SHARED_DIR, APP_URL, IS_HTTPS, TRUST_PROXY } from './config.js';
 import { seedDefaultAdmin, cleanupExpired } from './db.js';
 import { resolveActor } from './identity.js';
 import { sseHandler } from './events.js';
-import { HttpError, sendJson, sendText, serveStatic } from './http.js';
+import { HttpError, sendJson, sendText, serveStatic, setSecurityHeaders, clientIp, unauthorized } from './http.js';
 import { startEscalationWorker } from './domain/escalation.js';
 import { deliveryMode, verifyTransport } from './mail/transport.js';
 
@@ -28,7 +28,10 @@ import { DEFAULT_ADMIN, ESCALATION_MS } from '../shared/constants.js';
 const routes = [
   ['GET', '/api/state', api.getState],
   ['GET', '/api/whoami', api.whoami],
-  ['GET', '/api/events', (req, res) => sseHandler(req, res)],
+  ['GET', '/api/events', (req, res, { actor }) => {
+    if (!actor) throw unauthorized();
+    sseHandler(req, res);
+  }],
 
   ['POST', '/api/signals', api.createSignal],
   ['GET', '/api/signals/:id', api.getSignal],
@@ -103,6 +106,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
   const pathname = decodeURIComponent(url.pathname);
 
+  // Заголовки ставятся до маршрутизации, чтобы попасть в любой ответ,
+  // включая ошибки и отдачу статики.
+  setSecurityHeaders(res);
+  req.ip = clientIp(req);
+
   try {
     // Идентичность определяется до маршрутизации: сессия нужна и API, и странице
     // подтверждения почты, и статике.
@@ -144,24 +152,45 @@ function handleError(error, req, res, pathname) {
   }
 
   const wantsJson = pathname.startsWith('/api/') || (req.headers.accept ?? '').includes('application/json');
-  const payload = { error: error.message || 'Внутренняя ошибка' };
+
+  // Текст сбоя наружу не уходит: в нем бывают пути на диске и куски SQL.
+  // Клиенту достаточно кода, подробности остаются в журнале сервера.
+  const message = status >= 500 ? 'Внутренняя ошибка сервера' : error.message || 'Ошибка запроса';
+  const payload = { error: message };
   if (error.errors) payload.errors = error.errors;
+  if (error.retryAfter) res.setHeader('Retry-After', String(error.retryAfter));
 
   if (wantsJson) sendJson(res, status, payload);
-  else sendText(res, status, payload.error);
+  else sendText(res, status, message);
 }
 
 cleanupExpired();
+// Протухшие сессии и токены чистятся не только на старте: сервер живет неделями.
+const cleanupTimer = setInterval(cleanupExpired, 60 * 60 * 1000);
+cleanupTimer.unref?.();
+
 const seeded = seedDefaultAdmin();
 startEscalationWorker();
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log('');
   console.log(`  Система мониторинга сигналов → ${APP_URL}`);
+  console.log(`  Слушает: ${HOST}:${PORT}${HOST === '127.0.0.1' ? ' (только петля — наружу через обратный прокси)' : ''}`);
+  if (!IS_HTTPS) console.log('  ВНИМАНИЕ: APP_URL без https — куки уходят без флага Secure');
+  if (HOST !== '127.0.0.1' && !TRUST_PROXY) {
+    console.log('  ВНИМАНИЕ: порт открыт наружу напрямую — проверьте, что его закрывает firewall');
+  }
+  if (HOST === '127.0.0.1' && !TRUST_PROXY) {
+    console.log('  ВНИМАНИЕ: TRUST_PROXY выключен — за прокси все клиенты считаются одним адресом');
+  }
   console.log(`  Почта: ${deliveryMode === 'smtp' ? 'реальная отправка через SMTP' : 'dev-инбокс → /dev/mailbox'}`);
   console.log(`  Автоэскалация: порог ${Math.round(ESCALATION_MS / 3600000)} ч, фоновый процесс запущен`);
   if (seeded) {
-    console.log(`  Создан администратор по умолчанию: ${DEFAULT_ADMIN.login} / ${DEFAULT_ADMIN.password}`);
+    console.log(`  Создан главный администратор: ${seeded.login}`);
+    if (seeded.isDefaultPassword) {
+      console.log(`  ВНИМАНИЕ: пароль по умолчанию «${DEFAULT_ADMIN.password}» опубликован в README и известен всем.`);
+      console.log('           Смените его в разделе «Аккаунт» или задайте DEFAULT_ADMIN_PASSWORD до первого запуска.');
+    }
   }
   // Проверка SMTP идет после старта: сервер поднимается независимо от почты.
   verifyTransport().finally(() => console.log(''));

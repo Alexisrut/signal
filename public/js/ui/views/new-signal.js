@@ -136,7 +136,6 @@ export const newSignalView = {
     const summary = form.querySelector('[data-role="summary"]');
     const submitButton = form.querySelector('button[type="submit"]');
     const attachments = bindFileField(form);
-    let submitted = false;
 
     const controls = new Map(FIELDS.map((field) => [field.name, form.querySelector(`[name="${field.name}"]`)]));
 
@@ -199,7 +198,6 @@ export const newSignalView = {
         submitButton.textContent = 'Отправляем…';
         const signal = await createSignal({ ...payload, fileIds: uploaded.map((file) => file.id) });
 
-        submitted = true;
         clearDraft(actor);
         attachments.clear();
         showToast('Сигнал создан и отправлен на рассмотрение', 'success');
@@ -219,13 +217,12 @@ export const newSignalView = {
       }
     });
 
-    // Уход со страницы не должен терять уже введенный текст.
-    return () => {
-      if (submitted) return;
-      controls.forEach((control, name) => {
-        draft[name] = control.value;
-      });
-      writeDraft(actor, draft);
-    };
+    /*
+     * Черновик пишется на каждый ввод, поэтому дописывать его при уходе
+     * со страницы не нужно — и нельзя. Отправка сигнала обновляет состояние,
+     * из-за чего роутер может пересобрать экран прямо в середине запроса:
+     * cleanup пересозданной формы срабатывал уже ПОСЛЕ clearDraft и возвращал
+     * отправленный текст обратно в хранилище.
+     */
   },
 };

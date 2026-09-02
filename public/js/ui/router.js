@@ -79,8 +79,17 @@ export function createRouter({ root, routes, notFound, onRender }) {
       return;
     }
 
+    /*
+     * Наверх страницу возвращает только переход между разделами. Смена
+     * фильтра, раскрытие блока статистики и прочие ссылки, меняющие один
+     * query, остаются на месте: человек смотрит туда, где нажал, и утаскивать
+     * его в начало списка неоткуда — особенно заметно на телефоне, где до
+     * фильтров еще надо долистать.
+     */
+    const samePath = current?.ctx.path === path;
+    const scrollY = window.scrollY;
+
     current = { view: found.route.view, ctx, route: found.route };
-    window.scrollTo({ top: 0 });
 
     try {
       cleanup?.();
@@ -92,6 +101,8 @@ export function createRouter({ root, routes, notFound, onRender }) {
     root.innerHTML = current.view.render(ctx);
     cleanup = current.view.mount?.(root, ctx) ?? null;
     onRender?.(current);
+
+    window.scrollTo({ top: samePath ? scrollY : 0 });
   }
 
   /** Перерисовать экран, если он помечен как «живой» (реагирующий на данные). */

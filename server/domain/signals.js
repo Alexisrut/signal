@@ -334,7 +334,7 @@ export function createSignal(input, actor) {
       note: 'Сигнал создан и ожидает распределения',
     });
 
-    attachFiles(ENTITY.SIGNAL, id, input.fileIds ?? []);
+    attachFiles(ENTITY.SIGNAL, id, input.fileIds ?? [], actor);
   });
 
   const signal = getById(id);
@@ -757,6 +757,27 @@ export function unreadFor(userId, signalIds) {
   );
 
   return Object.fromEntries(rows.filter((row) => row.n > 0).map((row) => [row.id, row.n]));
+}
+
+/**
+ * Карточка в том виде, в каком ее можно отдать подрядчику.
+ *
+ * Интерфейс и так прячет внутреннюю кухню, но прятать в разметке мало:
+ * ответ API открывается в любой вкладке разработчика. Поэтому заметка
+ * кураторам и лента действий срезаются здесь, на сервере, а от истории
+ * остается только системный журнал смены статусов — без авторов и заметок.
+ */
+const CONTRACTOR_HISTORY_KINDS = new Set([HISTORY_KIND.CREATE, HISTORY_KIND.STATUS, HISTORY_KIND.REOPEN]);
+
+export function forContractor(signal) {
+  if (!signal) return signal;
+  return {
+    ...signal,
+    assignmentNote: null,
+    history: (signal.history ?? [])
+      .filter((entry) => CONTRACTOR_HISTORY_KINDS.has(entry.kind))
+      .map((entry) => ({ at: entry.at, kind: entry.kind, from: entry.from, to: entry.to })),
+  };
 }
 
 /** Отображаемое имя автора — для карточки в панели администратора. */

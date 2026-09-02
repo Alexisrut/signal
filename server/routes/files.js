@@ -2,8 +2,10 @@
 
 import Busboy from 'busboy';
 
-import { sendJson, badRequest, contentDisposition } from '../http.js';
-import { storeFile, openFileStream } from '../domain/files.js';
+import { sendJson, badRequest, notFound, unauthorized, contentDisposition } from '../http.js';
+import { ENTITY, getFileRow, listFileOwners, openFileStream, storeFile } from '../domain/files.js';
+import { getForActor } from '../domain/signals.js';
+import { guard, LIMITS } from '../ratelimit.js';
 import { MAX_FILE_SIZE } from '../../shared/constants.js';
 
 const MAX_FILES_PER_REQUEST = 10;
@@ -54,7 +56,15 @@ function parseMultipart(req) {
   });
 }
 
+/**
+ * Загрузка вложений. Только для вошедших: без этой проверки любой желающий
+ * складывал бы на диск сервера по 150 МБ за запрос и раздавал через него
+ * что угодно.
+ */
 export async function uploadFiles(req, res, { actor }) {
+  if (!actor) throw unauthorized();
+  guard(req, 'upload', LIMITS.UPLOAD);
+
   const parsed = await parseMultipart(req);
   if (!parsed.length) throw badRequest('Файлы не переданы');
 
@@ -62,7 +72,31 @@ export async function uploadFiles(req, res, { actor }) {
   sendJson(res, 201, { files });
 }
 
-export function downloadFile(req, res, { params }) {
+/**
+ * Отдача вложения.
+ *
+ * Право на файл выводится из права на сигнал, к которому он приложен: знать
+ * ссылку недостаточно. Свой только что загруженный файл автор видит и до
+ * привязки к сигналу — иначе форма создания не смогла бы его показать.
+ * Отказ отдается как 404: по коду ответа не должно быть видно, существует
+ * ли файл вообще.
+ */
+function assertMayRead(fileId, actor) {
+  if (!actor) throw unauthorized();
+
+  const row = getFileRow(fileId);
+  if (!row) throw notFound('Файл не найден');
+  if (row.uploaded_by && row.uploaded_by === actor.id) return;
+
+  const visible = listFileOwners(fileId).some(
+    (owner) => owner.entity_type === ENTITY.SIGNAL && getForActor(owner.entity_id, actor),
+  );
+  if (!visible) throw notFound('Файл не найден');
+}
+
+export function downloadFile(req, res, { actor, params }) {
+  assertMayRead(params.id, actor);
+
   const { row, stream } = openFileStream(params.id);
 
   res.writeHead(200, {
