@@ -93,8 +93,8 @@ const routes = [
   { path: '/account', view: accountView, guard: requireAuth },
 
   { path: '/new', view: newSignalView, guard: requireReporter },
-  // «Мои сигналы» — у подрядчика его обращения, у руководителя его задачи.
-  // Администраторы кураторами не бывают, поэтому раздела у них нет вовсе.
+  // «Мои сигналы» — у подрядчика его обращения, у сотрудника его задачи.
+  // Раздел появляется с первой своей задачей и дальше остается навсегда.
   { path: '/my', view: mySignalsView, guard: requireSignalsTab },
   { path: '/my/:id', view: mySignalView, guard: requireContractor },
   { path: '/my/:id/edit', view: editSignalView, guard: requireContractor },

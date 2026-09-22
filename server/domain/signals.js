@@ -13,7 +13,7 @@ import { publish } from '../events.js';
 import { findUser } from '../identity.js';
 import { attachFiles, listAttachments, listAttachmentsFor, ENTITY } from './files.js';
 import { ASSIGNABLE, add as addAssignee, assignmentClause, listFor, listOne, remove as removeAssignee } from './assignments.js';
-import { notifySignalEvent } from '../mail/notifier.js';
+import { notifySignalEvent, notifyAssignment } from '../mail/notifier.js';
 
 import {
   ASSIGNMENT,
@@ -26,6 +26,7 @@ import {
   SYSTEM_ACTOR,
   categoryLabel,
   isCategoryScopedRole,
+  isStaffRole,
   isSuperadminRole,
 } from '../../shared/constants.js';
 import {
@@ -421,13 +422,22 @@ export function assignPeople(signalId, userIds, actor, note = null) {
   const people = requested.map((id) => findUser(id)).filter(Boolean);
 
   const rejected = people.filter((person) => !canCurate(person, before.category));
+
+  // Две разные причины отказа — и две разные подсказки, что делать дальше.
+  const outsiders = rejected.filter((person) => !isStaffRole(person.role));
+  if (outsiders.length) {
+    throw badRequest(
+      `Ответственным может быть только сотрудник: ${outsiders.map((person) => person.displayName).join(', ')}`,
+    );
+  }
   if (rejected.length) {
     throw badRequest(
-      `Куратором может быть только руководитель с категорией «${categoryLabel(before.category)}»: ` +
+      `Руководителя можно назначить только на сигнал закрепленной за ним категории ` +
+        `(сейчас «${categoryLabel(before.category)}»): ` +
         rejected.map((person) => person.displayName).join(', '),
     );
   }
-  if (requested.length && !people.length) throw badRequest('Ни один из выбранных руководителей не найден');
+  if (requested.length && !people.length) throw badRequest('Ни один из выбранных сотрудников не найден');
   if (!people.length && !text) return before;
 
   const now = Date.now();
@@ -469,7 +479,13 @@ export function assignPeople(signalId, userIds, actor, note = null) {
   });
 
   publish('signal', { id: signalId, assigned: added.length });
-  return getById(signalId);
+
+  const after = getById(signalId);
+  // Письмо уходит только тем, кого добавили этим действием: повторное открытие
+  // окна назначения не должно рассылать напоминания уже работающим людям.
+  if (added.length) notifyAssignment(after, added, actor);
+
+  return after;
 }
 
 

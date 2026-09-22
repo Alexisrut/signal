@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import sqlite from 'node-sqlite3-wasm';
 
 import { DATA_DIR, UPLOADS_DIR, MAILBOX_DIR, DB_PATH } from './config.js';
-import { DEFAULT_ADMIN, DEFAULT_NOTIFY, ROLE, STATUS } from '../shared/constants.js';
+import { DEFAULT_ADMIN, DEFAULT_NOTIFY, NOTIFICATION_EVENT, ROLE, STATUS } from '../shared/constants.js';
 import { hashPassword, randomSalt, uid } from './crypto.js';
 
 const { Database } = sqlite;
@@ -261,7 +261,32 @@ function migrate() {
   }
 }
 
+/**
+ * Событие «сигнал назначен на вас» появилось позже остальных. У пользователей,
+ * заведенных раньше, в подписках его нет, и письмо о выдаче задачи до них бы
+ * не дошло: normalizeNotify отбрасывает неизвестные события, но новых не
+ * добавляет. Дописываем его один раз каждому, у кого включены уведомления.
+ */
+function backfillAssignSubscription() {
+  const rows = sql.all(`SELECT id, notify FROM users WHERE notify IS NOT NULL`);
+
+  for (const row of rows) {
+    let prefs;
+    try {
+      prefs = JSON.parse(row.notify);
+    } catch {
+      continue;
+    }
+    if (!prefs || !Array.isArray(prefs.events)) continue;
+    if (prefs.events.includes(NOTIFICATION_EVENT.ASSIGN)) continue;
+
+    prefs.events.push(NOTIFICATION_EVENT.ASSIGN);
+    sql.run(`UPDATE users SET notify = ? WHERE id = ?`, [JSON.stringify(prefs), row.id]);
+  }
+}
+
 migrate();
+backfillAssignSubscription();
 
 // Индекс создается после миграций: на старой базе колонки category еще нет.
 sql.exec(`CREATE INDEX IF NOT EXISTS idx_signals_category ON signals(category)`);

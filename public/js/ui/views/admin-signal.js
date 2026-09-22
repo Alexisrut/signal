@@ -162,11 +162,11 @@ export const adminSignalView = {
 
           <div class="detail__section">
             <div class="detail__section-head">
-              <h2>Кураторы (${signal.assignees.length})</h2>
+              <h2>Ответственные (${signal.assignees.length})</h2>
               ${[
                 distributes
                   ? html`<button class="btn btn--secondary btn--sm" data-action="assign-people">
-                      Назначить руководителей
+                      Назначить ответственных
                     </button>`
                   : '',
               ]}

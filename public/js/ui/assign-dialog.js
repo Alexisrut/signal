@@ -1,18 +1,21 @@
 /**
- * Окно выбора кураторов при выдаче задачи.
+ * Окно выбора ответственных при выдаче задачи.
  *
- * Кандидат — только руководитель, за которым закреплена категория этого
- * сигнала: администраторы задачи раздают, но кураторами не становятся,
- * а руководитель «не своей» категории в списке не появляется.
+ * Кандидаты делятся на две группы, и правило отбора у них разное:
+ *   • администраторы и главные администраторы — доступны всегда, они видят
+ *     весь поток и отвечают за него целиком;
+ *   • руководители — только те, за кем закреплена категория этого сигнала:
+ *     раздавать задачи «мимо специализации» система не дает.
  *
- * Список фильтруется строкой поиска по ФИО — на десятке руководителей это
- * уже быстрее, чем глазами.
+ * Список фильтруется строкой поиска по ФИО — на десятке сотрудников это уже
+ * быстрее, чем глазами. Заголовок группы прячется вместе с ее строками, чтобы
+ * не висеть над пустотой.
  *
  * К назначению прикладывается заметка: ее увидят все ответственные за задачу.
  */
 
 import { html } from '../core/utils.js';
-import { categoryLabel, categoryShort } from '/shared/constants.js';
+import { categoryLabel, categoryShort, ROLE, ROLE_LABEL } from '/shared/constants.js';
 import { canCurate } from '/shared/state-machine.js';
 import { listAssignables } from '../domain/session.js';
 import { checkbox } from './components.js';
@@ -25,7 +28,7 @@ import { openModal } from './modal.js';
  * @param {string} [options.title] заголовок окна
  * @param {string} [options.confirmLabel] подпись кнопки подтверждения
  * @param {boolean} [options.allowEmpty] можно ли подтвердить, никого не выбрав
- *   (при распределении — да: категорию назначают и без кураторов)
+ *   (при распределении — да: категорию назначают и без ответственных)
  * @returns {Promise<{assignees: string[], note: string}|null>} null — окно закрыли
  */
 export function openAssignDialog({
@@ -38,22 +41,38 @@ export function openAssignDialog({
   const already = new Set((signal?.assignees ?? []).map((person) => person.id));
   const candidates = listAssignables().filter((person) => canCurate(person, category));
 
-  const rows = candidates.map((person) =>
-    html`<div class="picker__row" data-name="${person.displayName.toLowerCase()}">
-      ${[
-        checkbox({
-          name: 'assignee',
-          value: person.id,
-          label: person.displayName,
-          hint: already.has(person.id)
-            ? 'уже назначен на этот сигнал'
-            : person.categories.map((id) => categoryShort(id)).join(', '),
-          checked: false,
-          disabled: already.has(person.id),
-        }),
-      ]}
-    </div>`,
-  );
+  const admins = candidates.filter((person) => person.role !== ROLE.MANAGER);
+  const managers = candidates.filter((person) => person.role === ROLE.MANAGER);
+
+  /** Подпись под именем: у руководителя — его категории, у администратора — должность. */
+  const hintFor = (person) => {
+    if (already.has(person.id)) return 'уже назначен на этот сигнал';
+    if (person.role === ROLE.MANAGER) return person.categories.map((id) => categoryShort(id)).join(', ');
+    return ROLE_LABEL[person.role];
+  };
+
+  const rowsOf = (people, group) =>
+    people.map(
+      (person) =>
+        html`<div class="picker__row" data-group="${group}" data-name="${person.displayName.toLowerCase()}">
+          ${[
+            checkbox({
+              name: 'assignee',
+              value: person.id,
+              label: person.displayName,
+              hint: hintFor(person),
+              checked: false,
+              disabled: already.has(person.id),
+            }),
+          ]}
+        </div>`,
+    );
+
+  const groupBlock = (people, group, legend) =>
+    people.length
+      ? html`<span class="picker__legend" data-group-label="${group}">${legend} (${people.length})</span>
+          <div class="checkboxes checkboxes--column">${rowsOf(people, group)}</div>`
+      : '';
 
   const bodyHtml = html`
     <p class="picker__category">Категория: <strong>${categoryLabel(category)}</strong></p>
@@ -67,13 +86,17 @@ export function openAssignDialog({
                 autocomplete="off" />
             </label>
 
-            <span class="picker__legend">Руководители категории (${candidates.length})</span>
-            <div class="checkboxes checkboxes--column" data-role="list">${rows}</div>
+            ${[
+              groupBlock(admins, 'admins', 'Администраторы'),
+              groupBlock(managers, 'managers', 'Руководители категории'),
+            ]}
+
             <p class="picker__empty" data-role="no-match" hidden>Никто не подходит под запрос.</p>
           </div>`
         : html`<p class="picker__empty">
-            За этой категорией не закреплен ни один руководитель. Назначьте ему категорию
-            в разделе «Учетные записи» — после этого он появится в списке.
+            Назначить некого: в системе нет ни администраторов, ни руководителей этой категории.
+            Закрепите категорию за руководителем в разделе «Учетные записи» — после этого он
+            появится в списке.
           </p>`,
     ]}
 
@@ -81,7 +104,7 @@ export function openAssignDialog({
       <span class="field__label">Заметка к задаче</span>
       <textarea class="field__control" name="note" rows="3"
         placeholder="Что важно учесть исполнителям (необязательно)">${signal?.assignmentNote ?? ''}</textarea>
-      <span class="field__hint">Заметку увидят все руководители, ответственные за эту задачу.</span>
+      <span class="field__hint">Заметку увидят все ответственные за эту задачу.</span>
     </label>
 
     <p class="field__error" data-role="picker-error"></p>
@@ -98,7 +121,7 @@ export function openAssignDialog({
 
       if (!allowEmpty && !assignees.length && !note) {
         root.querySelector('[data-role="picker-error"]').textContent =
-          'Выберите хотя бы одного руководителя или напишите заметку.';
+          'Выберите хотя бы одного сотрудника или напишите заметку.';
         return null;
       }
       return { assignees, note };
@@ -115,6 +138,7 @@ function bindSearch(root) {
   if (!search) return;
 
   const rows = [...root.querySelectorAll('.picker__row')];
+  const labels = [...root.querySelectorAll('[data-group-label]')];
   const empty = root.querySelector('[data-role="no-match"]');
 
   search.addEventListener('input', () => {
@@ -126,6 +150,12 @@ function bindSearch(root) {
       const match = !query || row.dataset.name.includes(query) || checked;
       row.hidden = !match;
       if (match) visible += 1;
+    }
+
+    // Заголовок группы без единой видимой строки только мешает читать список.
+    for (const label of labels) {
+      const group = label.dataset.groupLabel;
+      label.hidden = !rows.some((row) => row.dataset.group === group && !row.hidden);
     }
 
     if (empty) empty.hidden = visible > 0;

@@ -257,6 +257,7 @@ export const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 /** События, по которым уходят письма. */
 export const NOTIFICATION_EVENT = {
   CREATE: 'create',
+  ASSIGN: 'assign',
   RED: 'red',
   RESOLVE: 'resolve',
   REOPEN: 'reopen',
@@ -264,6 +265,7 @@ export const NOTIFICATION_EVENT = {
 
 export const NOTIFICATION_EVENT_LABEL = {
   [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
+  [NOTIFICATION_EVENT.ASSIGN]: 'Сигнал назначен на вас',
   [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
   [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
   [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
@@ -272,6 +274,7 @@ export const NOTIFICATION_EVENT_LABEL = {
 /** Подписки сотрудника: общий тумблер плюс выбор событий. */
 export const NOTIFICATION_EVENTS = [
   { id: NOTIFICATION_EVENT.CREATE, label: 'Новый сигнал в системе' },
+  { id: NOTIFICATION_EVENT.ASSIGN, label: 'Сигнал назначен на вас' },
   { id: NOTIFICATION_EVENT.RED, label: 'Сигнал стал критичным' },
   { id: NOTIFICATION_EVENT.RESOLVE, label: 'Сигнал закрыт' },
   { id: NOTIFICATION_EVENT.REOPEN, label: 'Сигнал возобновлен' },
@@ -285,6 +288,10 @@ export const NOTIFICATION_EVENT_IDS = NOTIFICATION_EVENTS.map((event) => event.i
  * У сотрудника — общий тумблер и набор событий. У подрядчика выбора событий нет:
  * ему приходит письмо только при смене статуса его собственной проблемы,
  * поэтому в интерфейсе остается один тумблер.
+ *
+ * Подписка задает, ЧТО человек хочет получать, но не отменяет правило, КОМУ
+ * событие вообще адресовано: руководителю письма приходят только по сигналам,
+ * назначенным на него (см. staffRecipients в server/mail/notifier.js).
  */
 export const DEFAULT_NOTIFY = Object.freeze({ enabled: true, events: [...NOTIFICATION_EVENT_IDS] });
 

@@ -132,6 +132,7 @@ export function passwordResetEmail({ user, url, ttlMinutes }) {
 
 const EVENT_TITLE = {
   [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
+  [NOTIFICATION_EVENT.ASSIGN]: 'Вам назначен сигнал',
   [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
   [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
   [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
@@ -139,6 +140,7 @@ const EVENT_TITLE = {
 
 const EVENT_LEAD = {
   [NOTIFICATION_EVENT.CREATE]: 'Подрядчик сообщил о новой проблеме.',
+  [NOTIFICATION_EVENT.ASSIGN]: 'Вы назначены ответственным за решение этой проблемы.',
   [NOTIFICATION_EVENT.RED]: 'Проблема не решена дольше 48 часов — система эскалировала сигнал.',
   [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал переведен в закрытый статус.',
   [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возвращен в активную фазу, отсчет времени решения продолжен.',
@@ -154,6 +156,13 @@ export function signalNotificationEmail({ event, signal, actor, url, audience = 
   const meta = STATUS_META[signal.status];
   const accent = STATUS_COLOR[signal.status] ?? '#3b74e8';
   const changedAt = signal.history.at(-1)?.at ?? signal.updatedAt;
+
+  // Заметка адресована именно ответственным, поэтому показываем ее в письме
+  // о назначении: иначе человек узнает о ней, только открыв карточку.
+  const noteRow =
+    event === NOTIFICATION_EVENT.ASSIGN && signal.assignmentNote
+      ? [['Заметка', escapeHtml(signal.assignmentNote)]]
+      : [];
 
   const attachmentsRow = signal.attachments.length
     ? [
@@ -183,6 +192,7 @@ export function signalNotificationEmail({ event, signal, actor, url, audience = 
         ['Подрядчик', escapeHtml(signal.contractorName)],
         ['Сектор', escapeHtml(signal.sector)],
         ['Описание', escapeHtml(truncate(signal.description))],
+        ...noteRow,
         ...attachmentsRow,
       ])}`,
     ctaLabel: 'Открыть карточку сигнала',
