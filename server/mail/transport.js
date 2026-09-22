@@ -21,6 +21,7 @@ const transport = SMTP_CONFIGURED
       host: SMTP.host,
       port: SMTP.port,
       secure: SMTP.secure,
+      requireTLS: !SMTP.secure,
       auth: SMTP.user ? { user: SMTP.user, pass: SMTP.pass } : undefined,
       // Без таймаутов зависший SMTP подвешивает и HTTP-запрос, который его ждет
       // (создание администратора отправляет письмо синхронно с ответом).

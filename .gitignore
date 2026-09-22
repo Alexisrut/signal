@@ -13,3 +13,17 @@
 /tutorial/frames/
 /tutorial/data/
 /tutorial/frames.txt
+
+# Служебные файлы macOS.
+.DS_Store
+
+# Отметка предыдущей версии для отката (создаётся deploy.sh на сервере).
+.deploy-previous
+
+# Рабочие выгрузки помощника.
+Claude outputs/
+
+# Сборочный вывод генератора руководств. Готовые к выкладке файлы — в guides/.
+/docs/guides/source/dist/
+/docs/guides/source/out/
+/docs/guides/guide-*.html
