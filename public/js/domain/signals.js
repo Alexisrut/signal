@@ -5,7 +5,8 @@
 
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
-import { ASSIGNMENT, STATUS } from '/shared/constants.js';
+import { upload } from './files.js';
+import { ASSIGNMENT, STATUS, STATUS_ORDER } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 
 export function listMine() {
@@ -17,9 +18,26 @@ export function listAll() {
   return store.getState().allSignals;
 }
 
-/** Раздел «Распределение» — только для главного администратора (иначе null). */
+/**
+ * Нераспределенные сигналы — раздел «Входной контроль», только для главного
+ * администратора (иначе null): ждущие проверки, вернувшиеся к подрядчику
+ * и закрытые без распределения.
+ */
 export function listUndistributed() {
   return store.getState().undistributed;
+}
+
+/** Сигналы, ждущие проверки на входном контроле, — по ним действовать сейчас. */
+export function listAwaitingIntake() {
+  return (listUndistributed() ?? []).filter((signal) => signal.status === STATUS.INTAKE);
+}
+
+/**
+ * Последняя запись ленты о действии — например, комментарий к возврату
+ * на доработку, чтобы показать его подрядчику прямо в карточке.
+ */
+export function lastAction(signal, action) {
+  return [...(signal?.history ?? [])].reverse().find((entry) => entry.details?.action === action) ?? null;
 }
 
 export function findMine(id) {
@@ -69,8 +87,8 @@ export function filterSignals(signals, { category = 'all', status = 'all', assig
 }
 
 export function countByStatus(signals) {
-  const counters = { total: signals.length, [STATUS.YELLOW]: 0, [STATUS.RED]: 0, [STATUS.GREEN]: 0, [STATUS.GRAY]: 0 };
-  for (const signal of signals) counters[signal.status] += 1;
+  const counters = { total: signals.length, ...Object.fromEntries(STATUS_ORDER.map((status) => [status, 0])) };
+  for (const signal of signals) counters[signal.status] = (counters[signal.status] ?? 0) + 1;
   return counters;
 }
 
@@ -82,8 +100,21 @@ export async function createSignal(input) {
   return result.signal;
 }
 
-export async function changeStatus(id, status) {
-  const result = await api.changeSignalStatus(id, status);
+/**
+ * Действие с сигналом: возврат на доработку, эскалация, закрытие, отклонение.
+ * Файлы, приложенные к действию, загружаются до него и уходят идентификаторами.
+ */
+export async function performAction(id, action, { comment = '', files = [] } = {}) {
+  const uploaded = await upload(files);
+  const result = await api.signalAction(id, action, { comment, fileIds: uploaded.map((file) => file.id) });
+  await store.refresh();
+  return result.signal;
+}
+
+/** Комментарий в переписке по сигналу. */
+export async function addComment(id, text, files = []) {
+  const uploaded = await upload(files);
+  const result = await api.commentSignal(id, text, uploaded.map((file) => file.id));
   await store.refresh();
   return result.signal;
 }
@@ -95,15 +126,22 @@ export async function reopenSignal(id, note) {
   return result.signal;
 }
 
-export async function updateSignal(id, input) {
-  const result = await api.updateSignal(id, input);
+/**
+ * Правка карточки. Новые файлы загружаются до сохранения и ложатся
+ * к вложениям сигнала. `input.resubmit` — доработка после возврата с входного
+ * контроля: сигнал вместе с правками уходит на повторную проверку.
+ */
+export async function updateSignal(id, input, files = []) {
+  const uploaded = await upload(files);
+  const result = await api.updateSignal(id, { ...input, fileIds: uploaded.map((file) => file.id) });
   await store.refresh();
   return result.signal;
 }
 
 /**
- * Назначить категорию — действие раздела «Распределение».
- * Вместе с категорией уходят выбранные руководители и заметка к задаче.
+ * Назначить категорию — действие раздела «Входной контроль»: для сигнала
+ * на проверке это передача в работу. Вместе с категорией уходят выбранные
+ * ответственные и заметка к задаче.
  */
 export async function distribute(id, category, assignees = [], note = null) {
   const result = await api.distributeSignal(id, category, assignees, note);

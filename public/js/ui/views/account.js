@@ -6,25 +6,22 @@
  */
 
 import { html, formatDateTime } from '../../core/utils.js';
-import {
-  NOTIFICATION_EVENTS,
-  ROLE_LABEL,
-  THEMES,
-  categoryLabel,
-} from '/shared/constants.js';
+import { ROLE_LABEL, THEMES, categoryLabel } from '/shared/constants.js';
 import { validatePasswordChange } from '/shared/validation.js';
 import { currentTheme, setTheme } from '../../core/theme.js';
+import * as store from '../../data/store.js';
 import {
   changePassword,
   currentActor,
   isContractor,
   isStaff,
+  isSuperadmin,
   myCategories,
   myNotify,
   resendVerification,
   updateNotify,
 } from '../../domain/session.js';
-import { checkbox, radioGroup, toggle } from '../components.js';
+import { radioGroup, toggle } from '../components.js';
 import { showToast } from '../chrome.js';
 
 const PASSWORD_FIELDS = [
@@ -50,6 +47,18 @@ function profileFacts(actor) {
   return html`<dl class="detail__facts">
     ${facts.map((fact) => html`<div><dt>${fact[0]}</dt><dd>${fact[1]}</dd></div>`)}
   </dl>`;
+}
+
+/** Что именно приходит на почту — зависит от роли. */
+function notifyHint(actor) {
+  if (isContractor(actor)) {
+    return 'Письмо приходит о каждом действии с вашими сигналами: проверка, возврат на доработку, передача в работу, комментарии, закрытие.';
+  }
+  const base = 'Письмо приходит о каждом действии с сигналами, по которым вы автор или ответственный.';
+  if (!isSuperadmin(actor)) return base;
+  return store.getState().meta?.mailCopySuperadmin
+    ? `${base} На период тестирования вам приходит копия всех писем по всем сигналам.`
+    : `${base} Плюс письма входного контроля: новые и доработанные сигналы.`;
 }
 
 export const accountView = {
@@ -118,31 +127,14 @@ export const accountView = {
               toggle({
                 name: 'notify-enabled',
                 label: 'Присылать письма на почту',
-                hint: isContractor(actor)
-                  ? 'Письмо приходит при смене статуса вашей проблемы.'
-                  : 'Общий тумблер: без него письма не отправляются вовсе.',
+                hint: notifyHint(actor),
                 checked: notify.enabled,
               }),
             ]}
-
-            ${[
-              isContractor(actor)
-                ? ''
-                : html`<div class="dependent ${notify.enabled ? '' : 'is-locked'}" data-role="events">
-                    <span class="dependent__legend">Что присылать</span>
-                    <div class="checkboxes checkboxes--column">
-                      ${NOTIFICATION_EVENTS.map((event) =>
-                        checkbox({
-                          name: 'notify-event',
-                          value: event.id,
-                          label: event.label,
-                          checked: notify.events.includes(event.id),
-                          disabled: !notify.enabled,
-                        }),
-                      )}
-                    </div>
-                  </div>`,
-            ]}
+            <p class="field__hint">
+              Все письма по одному сигналу приходят с одной темой — «Сигнал №… Суть проблемы» — и с одного
+              адреса, поэтому почта собирает их в одну цепочку от создания до закрытия.
+            </p>
 
             <button class="btn btn--primary" type="submit">Сохранить настройки</button>
           </form>
@@ -234,20 +226,14 @@ function bindPasswordForm(root, ctx) {
   });
 }
 
+/**
+ * Уведомления — один общий тумблер. Выбора отдельных событий нет: письма
+ * по сигналу складываются в почте в одну цепочку, и выборочная подписка
+ * рвала бы ее посередине.
+ */
 function bindNotifyForm(root) {
   const form = root.querySelector('#notify-form');
   const master = form.querySelector('[name="notify-enabled"]');
-  const dependent = form.querySelector('[data-role="events"]');
-
-  // Общий тумблер выключает выбор событий: список остается на виду,
-  // но становится недоступным — так понятнее, чем исчезающий блок.
-  master.addEventListener('change', () => {
-    dependent?.classList.toggle('is-locked', !master.checked);
-    dependent?.querySelectorAll('input').forEach((input) => {
-      input.disabled = !master.checked;
-      input.closest('.checkbox')?.classList.toggle('is-disabled', !master.checked);
-    });
-  });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -255,12 +241,8 @@ function bindNotifyForm(root) {
     const button = form.querySelector('button[type="submit"]');
     button.disabled = true;
 
-    const events = [...form.querySelectorAll('[name="notify-event"]')]
-      .filter((input) => input.checked)
-      .map((input) => input.value);
-
     try {
-      await updateNotify({ enabled: master.checked, events });
+      await updateNotify({ enabled: master.checked });
       showToast('Настройки уведомлений сохранены', 'success');
     } catch (error) {
       showToast(error.message, 'error');

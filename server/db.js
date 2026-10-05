@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import sqlite from 'node-sqlite3-wasm';
 
 import { DATA_DIR, UPLOADS_DIR, MAILBOX_DIR, DB_PATH } from './config.js';
-import { DEFAULT_ADMIN, DEFAULT_NOTIFY, NOTIFICATION_EVENT, ROLE, STATUS } from '../shared/constants.js';
+import { DEFAULT_ADMIN, DEFAULT_NOTIFY, ROLE, STATUS, SYSTEM_ACTOR, deriveSignalTopic } from '../shared/constants.js';
 import { hashPassword, randomSalt, uid } from './crypto.js';
 
 const { Database } = sqlite;
@@ -72,6 +72,10 @@ sql.exec(`
 
   CREATE TABLE IF NOT EXISTS signals (
     id              TEXT PRIMARY KEY,
+    /* Сквозной номер «Сигнал №125» — для людей и темы писем. */
+    number          INTEGER,
+    /* Тема писем: вычисляется при создании и больше не меняется. */
+    topic           TEXT,
     author_id       TEXT NOT NULL,
     author_role     TEXT NOT NULL,
     category        TEXT,
@@ -79,6 +83,8 @@ sql.exec(`
     sector          TEXT NOT NULL,
     description     TEXT NOT NULL,
     status          TEXT NOT NULL,
+    /* Момент входа в текущий статус — от него считается пауза. */
+    status_at       INTEGER,
     distributed_at  INTEGER,
     closed_at       INTEGER,
     paused_ms       INTEGER NOT NULL DEFAULT 0,
@@ -234,6 +240,35 @@ function migrate() {
   }
   addColumn('signals', 'paused_ms', 'INTEGER NOT NULL DEFAULT 0');
 
+  // Сквозная нумерация: существующим сигналам номера раздаются по порядку создания.
+  if (addColumn('signals', 'number', 'INTEGER')) {
+    sql.transaction(() => {
+      sql.all(`SELECT id FROM signals ORDER BY created_at, id`).forEach((row, index) => {
+        sql.run(`UPDATE signals SET number = ? WHERE id = ?`, [index + 1, row.id]);
+      });
+    });
+  }
+
+  if (addColumn('signals', 'topic', 'TEXT')) {
+    sql.transaction(() => {
+      for (const row of sql.all(`SELECT id, description FROM signals`)) {
+        sql.run(`UPDATE signals SET topic = ? WHERE id = ?`, [deriveSignalTopic(row.description), row.id]);
+      }
+    });
+  }
+
+  // Момент входа в текущий статус: у закрытых — время закрытия, у остальных —
+  // последняя смена статуса по ленте истории.
+  if (addColumn('signals', 'status_at', 'INTEGER')) {
+    sql.run(
+      `UPDATE signals SET status_at = COALESCE(
+         closed_at,
+         (SELECT MAX(h.at) FROM signal_history h
+           WHERE h.signal_id = signals.id AND h.status_from IS NOT h.status_to),
+         created_at)`,
+    );
+  }
+
   // Линии превратились в категории: старые значения переносим по смыслу,
   // а сигналы без линии остаются нераспределенными.
   if (hasColumn('signals', 'line')) {
@@ -250,6 +285,43 @@ function migrate() {
     console.info('[db] миграция: линии сигналов переведены в категории');
   }
 
+  // Входной контроль: нераспределенные открытые сигналы прошлой версии
+  // переходят в новый статус, иначе они повисли бы между разделами — на
+  // дашборд без категории не попадают, а проверки ждут только сигналы
+  // на входном контроле. Запрос дешевый и после первого прохода пустой.
+  const pending = sql.all(`SELECT id, status FROM signals WHERE category IS NULL AND status IN (?, ?)`, [
+    STATUS.YELLOW,
+    STATUS.RED,
+  ]);
+  if (pending.length) {
+    const now = Date.now();
+    sql.transaction(() => {
+      for (const row of pending) {
+        sql.run(`UPDATE signals SET status = ?, status_at = ?, updated_at = ? WHERE id = ?`, [
+          STATUS.INTAKE,
+          now,
+          now,
+          row.id,
+        ]);
+        sql.run(
+          `INSERT INTO signal_history (signal_id, at, kind, status_from, status_to, by_id, by_name, by_role, note)
+           VALUES (?, ?, 'status', ?, ?, ?, ?, ?, ?)`,
+          [
+            row.id,
+            now,
+            row.status,
+            STATUS.INTAKE,
+            SYSTEM_ACTOR.id,
+            SYSTEM_ACTOR.displayName,
+            SYSTEM_ACTOR.role,
+            'Сигнал переведен на входной контроль при обновлении платформы',
+          ],
+        );
+      }
+    });
+    console.info(`[db] миграция: на входной контроль переведено сигналов — ${pending.length}`);
+  }
+
   // Роль главного администратора: первым его получает стартовая учетная запись.
   const hasSuper = sql.get(`SELECT id FROM users WHERE role = ?`, [ROLE.SUPERADMIN]);
   if (!hasSuper) {
@@ -261,35 +333,11 @@ function migrate() {
   }
 }
 
-/**
- * Событие «сигнал назначен на вас» появилось позже остальных. У пользователей,
- * заведенных раньше, в подписках его нет, и письмо о выдаче задачи до них бы
- * не дошло: normalizeNotify отбрасывает неизвестные события, но новых не
- * добавляет. Дописываем его один раз каждому, у кого включены уведомления.
- */
-function backfillAssignSubscription() {
-  const rows = sql.all(`SELECT id, notify FROM users WHERE notify IS NOT NULL`);
-
-  for (const row of rows) {
-    let prefs;
-    try {
-      prefs = JSON.parse(row.notify);
-    } catch {
-      continue;
-    }
-    if (!prefs || !Array.isArray(prefs.events)) continue;
-    if (prefs.events.includes(NOTIFICATION_EVENT.ASSIGN)) continue;
-
-    prefs.events.push(NOTIFICATION_EVENT.ASSIGN);
-    sql.run(`UPDATE users SET notify = ? WHERE id = ?`, [JSON.stringify(prefs), row.id]);
-  }
-}
-
 migrate();
-backfillAssignSubscription();
 
-// Индекс создается после миграций: на старой базе колонки category еще нет.
+// Индексы создаются после миграций: на старой базе этих колонок еще нет.
 sql.exec(`CREATE INDEX IF NOT EXISTS idx_signals_category ON signals(category)`);
+sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_number ON signals(number)`);
 
 /**
  * Первичный посев: главный администратор, если в системе нет ни одного.

@@ -3,19 +3,21 @@
  *
  * У подрядчика это его собственные обращения: сервер отдает в mySignals только
  * сигналы, где он автор. У руководителя и администратора — задачи, за которые
- * он лично отвечает как исполнитель.
+ * он лично отвечает, и сигналы, которые он подал сам.
  *
  * Подрядчику внутренняя кухня не показывается: ни «не распределен», ни
- * «не принят», ни лента действий — только статус его проблемы и её движение.
+ * «не принят», ни внутренние записи ленты — только его проблема, ее движение
+ * и переписка по ней.
  */
 
 import { html, formatDateTime, truncate } from '../../core/utils.js';
-import { STATUS, STATUS_META, STATUS_ORDER, categoryLabel } from '/shared/constants.js';
-import { canEdit, canTransition } from '/shared/state-machine.js';
+import { STATUS, STATUS_META, STATUS_ORDER, SIGNAL_ACTION, categoryLabel } from '/shared/constants.js';
+import { can, canComment, canEdit, isInWork } from '/shared/state-machine.js';
 import { currentActor, isContractor } from '../../domain/session.js';
-import { listMine, findMine, changeStatus, countByStatus, unreadCount } from '../../domain/signals.js';
+import { listMine, findMine, countByStatus, unreadCount, lastAction } from '../../domain/signals.js';
 import {
   statusBadge,
+  numberTag,
   categoryTag,
   historyList,
   emptyState,
@@ -27,7 +29,7 @@ import {
   resolutionTimer,
   unreadBadge,
 } from '../components.js';
-import { showToast } from '../chrome.js';
+import { commentOnSignal, resolveSignal } from '../signal-actions.js';
 
 /**
  * Сводка подрядчика: сколько обращений он подал за все время и сколько
@@ -54,19 +56,60 @@ function contractorStats(signals) {
   </div>`;
 }
 
-function bindResolveButtons(root) {
+function bindActions(root, find) {
   root.querySelectorAll('[data-resolve]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      button.disabled = true;
-      try {
-        await changeStatus(button.dataset.resolve, STATUS.GREEN);
-        showToast('Сигнал переведен в статус «Проблема решена»', 'success');
-      } catch (error) {
-        button.disabled = false;
-        showToast(error.message, 'error');
-      }
-    });
+    button.addEventListener('click', () => resolveSignal(find(button.dataset.resolve), button));
   });
+  root.querySelectorAll('[data-comment]').forEach((button) => {
+    button.addEventListener('click', () => commentOnSignal(find(button.dataset.comment), button));
+  });
+}
+
+/** Плашка над описанием: на каком этапе сигнал и что от подрядчика нужно сейчас. */
+function stageCallout(signal, actor) {
+  if (signal.status === STATUS.INTAKE) {
+    return html`<div class="callout callout--intake">
+      <span class="callout__title">Сигнал на входном контроле</span>
+      <span class="callout__text">
+        Главный администратор проверяет, достаточно ли данных, чтобы передать сигнал в работу. О результате
+        придет письмо.
+      </span>
+    </div>`;
+  }
+
+  if (signal.status === STATUS.REWORK) {
+    const returned = lastAction(signal, SIGNAL_ACTION.INTAKE_RETURN);
+    const mayFix = can(SIGNAL_ACTION.RESUBMIT, signal, actor).allowed;
+    return html`<div class="callout callout--rework">
+      <span class="callout__title">Сигнал возвращен на доработку</span>
+      <span class="callout__text">
+        Данных недостаточно, чтобы передать сигнал в работу. Дополните его по комментарию — уточните описание,
+        приложите документы или фотографии — и отправьте на повторную проверку.
+      </span>
+      ${[
+        returned
+          ? html`<span class="callout__meta">${formatDateTime(returned.at)} · ${returned.byName}</span>
+              <div class="callout__quote">${returned.note}</div>`
+          : '',
+      ]}
+      ${[
+        mayFix
+          ? html`<div class="callout__actions">
+              <a class="btn btn--primary" href="#/my/${signal.id}/edit">Доработать и отправить на проверку</a>
+            </div>`
+          : '',
+      ]}
+    </div>`;
+  }
+
+  if (isInWork(signal.status) && signal.assignees.length) {
+    return html`<div class="callout">
+      <span class="callout__title">Сигнал в работе</span>
+      <span class="callout__text">Ответственные: ${signal.assignees.map((person) => person.name).join(', ')}.</span>
+    </div>`;
+  }
+
+  return '';
 }
 
 /* --------------------------------- Список ------------------------------------ */
@@ -104,16 +147,17 @@ export const mySignalsView = {
     }
 
     const rows = signals.map((signal) => {
-      const canResolve = canTransition(signal, STATUS.GREEN, actor).allowed;
-      // Подрядчик ведет карточку в своем разделе, ответственный — в рабочей.
+      const canResolve = mine && can(SIGNAL_ACTION.RESOLVE, signal, actor).allowed;
+      const needsFix = mine && signal.status === STATUS.REWORK;
+      // Подрядчик ведет карточку в своем разделе, сотрудник — в рабочей.
       const href = mine ? `#/my/${signal.id}` : `#/admin/signal/${signal.id}`;
 
       return html`<article class="row row--${signal.status}">
         <div class="row__main">
           <div class="row__head">
-            ${[statusBadge(signal.status, { withHint: true })]}
+            ${[numberTag(signal)]} ${[statusBadge(signal.status, { withHint: true })]}
             ${[categoryTag(signal.category, { hideUndistributed: mine })]}
-            ${[assigneeChip(signal, { hideFree: mine })]} ${[attachmentsBadge(signal.attachments)]}
+            ${[assigneeChip(signal, { hideFree: mine || !signal.category })]} ${[attachmentsBadge(signal.attachments)]}
             <span class="row__age">Возраст: ${ageLabel(signal, now)}</span>
             ${[mine ? '' : unreadBadge(unreadCount(signal.id))]}
           </div>
@@ -127,9 +171,10 @@ export const mySignalsView = {
           </div>
         </div>
         <div class="row__actions">
+          ${[needsFix ? html`<a class="btn btn--primary btn--sm" href="#/my/${signal.id}/edit">Доработать</a>` : '']}
           <a class="btn btn--ghost btn--sm" href="${href}">Подробнее</a>
           ${[
-            mine && canEdit(signal, actor).allowed
+            mine && !needsFix && canEdit(signal, actor).allowed
               ? html`<a class="btn btn--ghost btn--sm" href="#/my/${signal.id}/edit">Изменить</a>`
               : '',
           ]}
@@ -153,7 +198,9 @@ export const mySignalsView = {
           <div>
             <h1 class="page__title">Мои сигналы</h1>
             <p class="page__lead">
-              ${mine ? 'Вы видите только собственные сигналы.' : 'Задачи, за которые вы отвечаете.'}
+              ${mine
+                ? 'Вы видите только собственные сигналы.'
+                : 'Задачи, за которые вы отвечаете, и сигналы, которые вы подали.'}
             </p>
           </div>
           ${[mine ? html`<a class="btn btn--primary" href="#/new">Задать проблему</a>` : '']}
@@ -166,7 +213,7 @@ export const mySignalsView = {
   },
 
   mount(root) {
-    bindResolveButtons(root);
+    bindActions(root, findMine);
   },
 };
 
@@ -194,9 +241,11 @@ export const mySignalView = {
       `;
     }
 
-    const canResolve = canTransition(signal, STATUS.GREEN, actor).allowed;
+    const canResolve = can(SIGNAL_ACTION.RESOLVE, signal, actor).allowed;
+    const comments = canComment(signal, actor).allowed;
     const now = Date.now();
     const assignees = signal.assignees.map((person) => person.name).join(', ');
+    const needsFix = signal.status === STATUS.REWORK;
 
     return html`
       <section class="page">
@@ -204,7 +253,9 @@ export const mySignalView = {
           <a class="link link--back" href="#/my">← Мои сигналы</a>
           ${[
             canEdit(signal, actor).allowed
-              ? html`<a class="btn btn--secondary btn--sm" href="#/my/${signal.id}/edit">Редактировать</a>`
+              ? html`<a class="btn btn--secondary btn--sm" href="#/my/${signal.id}/edit">
+                  ${needsFix ? 'Доработать' : 'Редактировать'}
+                </a>`
               : '',
           ]}
         </div>
@@ -212,7 +263,7 @@ export const mySignalView = {
         <article class="detail detail--${signal.status}">
           <header class="detail__head">
             <div class="detail__badges">
-              ${[statusBadge(signal.status, { withHint: true })]}
+              ${[numberTag(signal)]} ${[statusBadge(signal.status, { withHint: true })]}
               ${[categoryTag(signal.category, { hideUndistributed: mine })]}
               ${[assigneeChip(signal, { compact: false, hideFree: mine })]}
             </div>
@@ -220,10 +271,13 @@ export const mySignalView = {
             <p class="detail__subtitle">Сектор: ${signal.sector}</p>
           </header>
 
+          ${[stageCallout(signal, actor)]}
+
           <dl class="detail__facts">
+            <div><dt>Номер</dt><dd>${signal.number ? `№${signal.number}` : '—'}</dd></div>
             ${[
               // Пустые «не принят» и «не распределен» подрядчику не показываем.
-              assignees ? html`<div><dt>Исполнители</dt><dd>${assignees}</dd></div>` : '',
+              assignees ? html`<div><dt>Ответственные</dt><dd>${assignees}</dd></div>` : '',
             ]}
             ${[
               signal.category
@@ -260,18 +314,24 @@ export const mySignalView = {
           <div class="detail__actions">
             ${[
               canResolve
-                ? html`<button class="btn btn--success" data-resolve="${signal.id}">Проблема решена</button>`
-                : html`<span class="detail__note"
-                    >${STATUS_META[signal.status].terminal
-                      ? 'Сигнал закрыт — действия недоступны.'
-                      : 'Изменение статуса недоступно.'}</span
-                  >`,
+                ? html`<button class="btn btn--success" data-resolve="${signal.id}">Проблема решена — закрыть сигнал</button>`
+                : '',
+            ]}
+            ${[
+              comments
+                ? html`<button class="btn btn--secondary" data-comment="${signal.id}">Написать комментарий</button>`
+                : '',
+            ]}
+            ${[
+              !canResolve && STATUS_META[signal.status].terminal
+                ? html`<span class="detail__note">Сигнал закрыт.</span>`
+                : '',
             ]}
           </div>
 
           <div class="detail__section">
-            <h2>История статусов</h2>
-            ${[historyList(signal.history, { statusOnly: mine })]}
+            <h2>История и переписка</h2>
+            ${[historyList(signal.history)]}
           </div>
         </article>
       </section>
@@ -279,6 +339,6 @@ export const mySignalView = {
   },
 
   mount(root) {
-    bindResolveButtons(root);
+    bindActions(root, findMine);
   },
 };

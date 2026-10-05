@@ -2,18 +2,26 @@
  * Редактирование сигнала.
  *
  * Правки не переписывают карточку молча: сервер сравнивает поля со старыми
- * значениями и пишет в историю, кто именно и что поменял.
+ * значениями и пишет в историю, кто именно и что поменял. К сигналу можно
+ * приложить новые файлы и пояснение.
+ *
+ * Эта же форма — доработка сигнала подрядчиком после возврата с входного
+ * контроля: сверху комментарий проверяющего, снизу кнопка «Отправить на
+ * повторную проверку».
  */
 
-import { html } from '../../core/utils.js';
-import { categoryLabel } from '/shared/constants.js';
-import { validateSignalInput } from '/shared/validation.js';
-import { canEdit } from '/shared/state-machine.js';
+import { html, formatDateTime } from '../../core/utils.js';
+import { SIGNAL_ACTION, categoryLabel } from '/shared/constants.js';
+import { validateComment, validateSignalInput } from '/shared/validation.js';
+import { can, canEdit } from '/shared/state-machine.js';
 import { currentActor, isStaff, isSuperadmin } from '../../domain/session.js';
-import { findAny, updateSignal } from '../../domain/signals.js';
-import { emptyState, statusBadge } from '../components.js';
+import { findAny, lastAction, updateSignal } from '../../domain/signals.js';
+import { bindFileField, emptyState, fileField, numberTag, statusBadge } from '../components.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
+
+/** Доработка после возврата с входного контроля — правка автором с отправкой на проверку. */
+const isResubmit = (signal, actor) => can(SIGNAL_ACTION.RESUBMIT, signal, actor).allowed;
 
 /**
  * Поле «Подрядчик» — это имя автора. Подрядчику оно недоступно: имя закреплено
@@ -59,6 +67,8 @@ export const editSignalView = {
     }
 
     const formFields = fieldsFor(actor);
+    const resubmit = isResubmit(signal, actor);
+    const returned = resubmit ? lastAction(signal, SIGNAL_ACTION.INTAKE_RETURN) : null;
     // Заметку к распределению правит только главный администратор: это
     // сообщение кураторам, и переписывать его на ходу может лишь тот,
     // кто задачу раздавал.
@@ -80,14 +90,36 @@ export const editSignalView = {
       <section class="wizard">
         <a class="link link--back" href="${backHref}">← Назад к сигналу</a>
 
-        <h1 class="wizard__title">Редактирование сигнала</h1>
+        <h1 class="wizard__title">${resubmit ? 'Доработка сигнала' : 'Редактирование сигнала'}</h1>
         <p class="wizard__lead">
-          ${[statusBadge(signal.status)]} · категория: <strong>${categoryLabel(signal.category)}</strong>
+          ${[numberTag(signal)]} ${[statusBadge(signal.status)]}
+          ${[signal.category ? html` · категория: <strong>${categoryLabel(signal.category)}</strong>` : '']}
           ${[isStaff(actor) ? html` · правка будет записана в историю от вашего имени` : '']}
         </p>
 
+        ${[
+          returned
+            ? html`<div class="callout callout--rework">
+                <span class="callout__title">Что нужно дополнить</span>
+                <span class="callout__meta">${formatDateTime(returned.at)} · ${returned.byName}</span>
+                <div class="callout__quote">${returned.note}</div>
+              </div>`
+            : '',
+        ]}
+
         <form class="form" id="edit-signal-form" novalidate>
           ${fields}
+
+          ${[fileField({ label: 'Добавить файлы (необязательно)' })]}
+
+          <label class="field" data-field="comment">
+            <span class="field__label">${resubmit ? 'Пояснение для проверяющего' : 'Комментарий к изменениям'}</span>
+            <textarea class="field__control" name="comment" rows="3"
+              placeholder="${resubmit
+                ? 'Что дополнено или уточнено (необязательно, если это видно из правок и файлов)'
+                : 'Необязательно — попадет в ленту событий и в письмо участникам'}"></textarea>
+            <span class="field__error" data-error-for="comment"></span>
+          </label>
 
           ${[
             editsNote
@@ -106,7 +138,9 @@ export const editSignalView = {
 
           <div class="wizard__actions">
             <a class="btn btn--ghost" href="${backHref}">Отмена</a>
-            <button class="btn btn--primary" type="submit">Сохранить изменения</button>
+            <button class="btn btn--primary" type="submit">
+              ${resubmit ? 'Отправить на повторную проверку' : 'Сохранить изменения'}
+            </button>
           </div>
         </form>
       </section>
@@ -119,6 +153,10 @@ export const editSignalView = {
 
     const signal = findAny(ctx.params.id);
     const formFields = fieldsFor(currentActor());
+    const resubmit = isResubmit(signal, currentActor());
+    const submitLabel = resubmit ? 'Отправить на повторную проверку' : 'Сохранить изменения';
+    const attachments = bindFileField(form);
+    const commentControl = form.querySelector('[name="comment"]');
     const summary = form.querySelector('[data-role="summary"]');
     const button = form.querySelector('button[type="submit"]');
     const controls = new Map(formFields.map((field) => [field.name, form.querySelector(`[name="${field.name}"]`)]));
@@ -133,7 +171,7 @@ export const editSignalView = {
       summary.textContent = message;
     }
 
-    controls.forEach((control, name) => {
+    [...controls, ['comment', commentControl]].forEach(([name, control]) => {
       control.addEventListener('input', () => {
         form.querySelector(`[data-field="${name}"]`).classList.remove('is-invalid');
         form.querySelector(`[data-error-for="${name}"]`).textContent = '';
@@ -154,25 +192,34 @@ export const editSignalView = {
         // Ключа нет вовсе, когда поля нет: сервер отличает «не трогали»
         // от «очистили» именно по его отсутствию.
         ...(noteControl ? { assignmentNote: noteControl.value } : {}),
+        comment: commentControl.value,
+        resubmit,
       };
 
       const { valid, errors } = validateSignalInput(payload);
-      if (!valid) {
+      const commentError = validateComment(payload.comment, { required: false });
+      if (commentError) errors.comment = commentError;
+      if (!valid || commentError) {
         showErrors(errors);
+        form.querySelector(`[data-field="comment"]`).classList.toggle('is-invalid', Boolean(commentError));
+        form.querySelector(`[data-error-for="comment"]`).textContent = commentError ?? '';
         controls.get(formFields.find((field) => errors[field.name])?.name)?.focus();
         return;
       }
 
       button.disabled = true;
-      button.textContent = 'Сохраняем…';
+      button.textContent = attachments.getFiles().length ? 'Загружаем файлы…' : 'Сохраняем…';
 
       try {
-        await updateSignal(ctx.params.id, payload);
-        showToast('Изменения сохранены и записаны в историю', 'success');
+        await updateSignal(ctx.params.id, payload, attachments.getFiles());
+        showToast(
+          resubmit ? 'Сигнал дополнен и отправлен на повторную проверку' : 'Изменения сохранены и записаны в историю',
+          'success',
+        );
         navigate(backHref);
       } catch (error) {
         button.disabled = false;
-        button.textContent = 'Сохранить изменения';
+        button.textContent = submitLabel;
         if (error.errors) showErrors(error.errors, error.message);
         else {
           summary.hidden = false;

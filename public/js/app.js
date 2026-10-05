@@ -61,7 +61,7 @@ function requireStaff() {
   return isAuthenticated() ? '/' : '/login';
 }
 
-/** Распределение и учетные записи — зона главного администратора. */
+/** Входной контроль и учетные записи — зона главного администратора. */
 function requireSuperadmin() {
   const redirect = requireStaff();
   if (redirect) return redirect;

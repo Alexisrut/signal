@@ -1,11 +1,12 @@
 /** Шапка приложения, глобальные баннеры и всплывающие уведомления. */
 
 import { html } from '../core/utils.js';
-import { ROLE, ROLE_LABEL, STATUS, THEME, formatShortName } from '/shared/constants.js';
+import { ROLE, ROLE_LABEL, THEME, formatShortName } from '/shared/constants.js';
+import { isActive } from '/shared/state-machine.js';
 import { currentTheme, onThemeChange, toggleTheme } from '../core/theme.js';
 import * as store from '../data/store.js';
 import { currentActor, hasSignalsTab, isAdmin, isAuthenticated, isStaff, isSuperadmin, logout } from '../domain/session.js';
-import { listMine, listAll, listUndistributed } from '../domain/signals.js';
+import { listMine, listAll, listAwaitingIntake } from '../domain/signals.js';
 import { navigate } from './router.js';
 
 let toastHost = null;
@@ -30,7 +31,7 @@ function navLink(href, label, currentPath, badge) {
   >`;
 }
 
-const isActiveStatus = (signal) => signal.status === STATUS.YELLOW || signal.status === STATUS.RED;
+const isActiveStatus = (signal) => isActive(signal.status);
 
 /**
  * Состояние мобильного меню. Живет вне рендера, потому что шапка перерисовывается
@@ -103,7 +104,7 @@ export function renderHeader(currentPath = '/') {
   const actor = currentActor();
   const state = store.getState();
 
-  // Порядок пунктов: Главная → Мои сигналы → Дашборд → Распределение →
+  // Порядок пунктов: Главная → Мои сигналы → Дашборд → Входной контроль →
   // Учетные записи → Аккаунт. «Аккаунт» замыкает меню как личный раздел.
   const links = [navLink('#/', 'Главная', currentPath)];
 
@@ -116,9 +117,10 @@ export function renderHeader(currentPath = '/') {
     const activeAll = (listAll() ?? []).filter(isActiveStatus).length;
     links.push(navLink('#/admin', 'Дашборд', currentPath, activeAll || ''));
 
-    // Распределение и учетные записи — исключительно зона главного администратора.
+    // Входной контроль и учетные записи — исключительно зона главного администратора.
+    // Счетчик — сигналы, которые ждут проверки прямо сейчас.
     if (isSuperadmin(actor)) {
-      links.push(navLink('#/admin/distribution', 'Распределение', currentPath, (listUndistributed() ?? []).length || ''));
+      links.push(navLink('#/admin/distribution', 'Входной контроль', currentPath, listAwaitingIntake().length || ''));
       links.push(navLink('#/admin/users', 'Учетные записи', currentPath));
     }
   }

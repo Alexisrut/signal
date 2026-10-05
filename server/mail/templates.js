@@ -6,13 +6,19 @@
  */
 
 import {
+  ROLE,
+  ROLE_LABEL,
   STATUS_META,
-  NOTIFICATION_EVENT,
+  SIGNAL_ACTION,
+  SIGNAL_ACTION_LABEL,
   categoryLabel,
   formatBytes,
+  signalNumber,
 } from '../../shared/constants.js';
 
 const STATUS_COLOR = {
+  intake: '#3b74e8',
+  rework: '#8a5cd6',
   yellow: '#e0a800',
   red: '#d93a26',
   green: '#1e9e52',
@@ -130,89 +136,154 @@ export function passwordResetEmail({ user, url, ttlMinutes }) {
 
 /* ------------------------------- уведомления --------------------------------- */
 
-const EVENT_TITLE = {
-  [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
-  [NOTIFICATION_EVENT.ASSIGN]: 'Вам назначен сигнал',
-  [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
-  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
-  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
-};
+/** Первая строка письма: что произошло. Подрядчику при возврате — что делать дальше. */
+function leadFor(action, { audience, actor }) {
+  switch (action) {
+    case SIGNAL_ACTION.CREATE:
+      return audience === 'contractor'
+        ? 'Сигнал зарегистрирован и передан на входной контроль: главный администратор проверит, достаточно ли в нем данных для передачи в работу. О каждом следующем шаге придет письмо в эту же цепочку.'
+        : 'Поступил новый сигнал. Он ожидает входного контроля.';
+    case SIGNAL_ACTION.INTAKE_RETURN:
+      return audience === 'contractor'
+        ? 'Данных в сигнале недостаточно, чтобы передать его в работу. Дополните сигнал по комментарию ниже — уточните описание, приложите документы или фотографии — и отправьте его на повторную проверку.'
+        : 'По результатам входного контроля сигнал возвращен подрядчику на доработку.';
+    case SIGNAL_ACTION.UPDATE:
+      return 'В сигнал внесены дополнения или изменения.';
+    case SIGNAL_ACTION.RESUBMIT:
+      return 'Сигнал доработан и повторно направлен на входной контроль.';
+    case SIGNAL_ACTION.DISTRIBUTE:
+      return 'Сигнал прошел входной контроль и передан в работу ответственному.';
+    case SIGNAL_ACTION.ASSIGN:
+      return 'По сигналу назначен ответственный.';
+    case SIGNAL_ACTION.COMMENT:
+      return 'По сигналу добавлен комментарий.';
+    case SIGNAL_ACTION.ESCALATE:
+      return actor?.role === ROLE.SYSTEM
+        ? 'Сигнал в работе дольше 48 часов — система перевела его в критичные.'
+        : 'Сигнал переведен в критичные.';
+    case SIGNAL_ACTION.RESOLVE:
+      return 'Сигнал закрыт: проблема решена.';
+    case SIGNAL_ACTION.REJECT:
+      return 'Сигнал отклонен.';
+    case SIGNAL_ACTION.REOPEN:
+      return 'Сигнал возобновлен и возвращен в работу.';
+    default:
+      return 'По сигналу выполнено действие.';
+  }
+}
 
-const EVENT_LEAD = {
-  [NOTIFICATION_EVENT.CREATE]: 'Подрядчик сообщил о новой проблеме.',
-  [NOTIFICATION_EVENT.ASSIGN]: 'Вы назначены ответственным за решение этой проблемы.',
-  [NOTIFICATION_EVENT.RED]: 'Проблема не решена дольше 48 часов — система эскалировала сигнал.',
-  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал переведен в закрытый статус.',
-  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возвращен в активную фазу, отсчет времени решения продолжен.',
-};
+/** Подпись комментария: при возврате это перечень того, что дополнить. */
+function commentLabel(action) {
+  if (action === SIGNAL_ACTION.INTAKE_RETURN) return 'Что нужно дополнить';
+  if (action === SIGNAL_ACTION.REJECT) return 'Причина';
+  return 'Комментарий';
+}
+
+function actorName(actor) {
+  if (!actor || actor.role === ROLE.SYSTEM) return 'Система';
+  const role = ROLE_LABEL[actor.role]?.toLowerCase();
+  if (!role || actor.displayName?.toLowerCase() === role) return actor.displayName;
+  return `${actor.displayName} (${role})`;
+}
 
 const FOOTER_NOTE = {
-  staff: 'Письмо отправлено сотрудникам, подписанным на это событие. Подписки настраиваются в разделе «Аккаунт».',
+  staff: 'Письма по этому сигналу приходят с одной темой и собираются в почте в одну цепочку. Отключить уведомления можно в разделе «Аккаунт».',
   contractor:
-    'Письмо отправлено автору обращения. Отключить уведомления можно в разделе «Аккаунт».',
+    'Письмо отправлено участнику обращения. Письма по этому сигналу приходят с одной темой и собираются в почте в одну цепочку. Отключить уведомления можно в разделе «Аккаунт».',
 };
 
-export function signalNotificationEmail({ event, signal, actor, url, audience = 'staff' }) {
+/**
+ * Письмо о действии с сигналом.
+ *
+ * В каждом письме — номер сигнала, действие и новый статус, кто его выполнил,
+ * комментарий, если он был, и ссылка прямо в карточку. Тема приходит снаружи
+ * и одинакова для всех писем сигнала.
+ */
+export function signalNotificationEmail({
+  action,
+  signal,
+  actor,
+  url,
+  audience = 'staff',
+  subject,
+  comment = null,
+  changes = [],
+  files = [],
+  assigned = [],
+}) {
   const meta = STATUS_META[signal.status];
   const accent = STATUS_COLOR[signal.status] ?? '#3b74e8';
   const changedAt = signal.history.at(-1)?.at ?? signal.updatedAt;
+  const title = `${signalNumber(signal)} · ${SIGNAL_ACTION_LABEL[action] ?? 'Действие с сигналом'}`;
+  const lead = leadFor(action, { audience, actor });
 
-  // Заметка адресована именно ответственным, поэтому показываем ее в письме
-  // о назначении: иначе человек узнает о ней, только открыв карточку.
-  const noteRow =
-    event === NOTIFICATION_EVENT.ASSIGN && signal.assignmentNote
-      ? [['Заметка', escapeHtml(signal.assignmentNote)]]
-      : [];
+  const assigneeNames = (signal.assignees ?? []).map((person) => person.name).join(', ');
+  const fileNames = files.map((file) => `${file.filename} (${formatBytes(file.size)})`);
+  // Заметка адресована ответственным — подрядчику ее не показываем.
+  const showNote =
+    audience === 'staff' &&
+    signal.assignmentNote &&
+    (action === SIGNAL_ACTION.DISTRIBUTE || action === SIGNAL_ACTION.ASSIGN);
 
-  const attachmentsRow = signal.attachments.length
-    ? [
-        [
-          'Вложения',
-          signal.attachments
-            .map((file) => `${escapeHtml(file.filename)} <span style="color:#8b99ab;">(${formatBytes(file.size)})</span>`)
-            .join('<br>'),
-        ],
-      ]
-    : [];
+  const rows = [
+    ['Сигнал', `<b>${escapeHtml(signalNumber(signal))}</b>`],
+    ['Действие', escapeHtml(SIGNAL_ACTION_LABEL[action] ?? action)],
+    [
+      'Статус',
+      `<span style="display:inline-block;padding:3px 11px;border-radius:999px;background:${accent};color:#fff;font-size:13px;font-weight:700;">${escapeHtml(meta?.label ?? signal.status)}</span>`,
+    ],
+    ['Кто выполнил', escapeHtml(actorName(actor))],
+    ['Когда', escapeHtml(formatDateTime(changedAt))],
+    ...(changes.length ? [['Изменено', escapeHtml(changes.map((change) => change.label).join(', '))]] : []),
+    ...(fileNames.length ? [['Файлы', fileNames.map(escapeHtml).join('<br>')]] : []),
+    ...(assigned.length ? [['Назначены', escapeHtml(assigned.map((person) => person.displayName).join(', '))]] : []),
+    ...(signal.category ? [['Категория', escapeHtml(categoryLabel(signal.category))]] : []),
+    ...(assigneeNames ? [['Ответственные', escapeHtml(assigneeNames)]] : []),
+    ...(showNote ? [['Заметка', escapeHtml(signal.assignmentNote)]] : []),
+    ['Подрядчик', escapeHtml(signal.contractorName)],
+    ['Сектор', escapeHtml(signal.sector)],
+    ['Описание', escapeHtml(truncate(signal.description))],
+  ];
+
+  const commentHtml = comment
+    ? `<div style="margin:4px 0 16px;padding:12px 16px;border-left:4px solid ${accent};background:#f6f8fb;border-radius:6px;">
+         <div style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b99ab;margin-bottom:6px;">${escapeHtml(commentLabel(action))}</div>
+         <div style="font-size:15px;white-space:pre-wrap;">${escapeHtml(comment)}</div>
+       </div>`
+    : '';
 
   const html = layout({
-    title: EVENT_TITLE[event],
+    title,
     accent,
     bodyHtml: `
-      <p style="margin:0 0 14px;">${escapeHtml(EVENT_LEAD[event])}</p>
-      ${factsTable([
-        ['ID сигнала', `<span style="font-family:Menlo,Consolas,monospace;">${escapeHtml(signal.id)}</span>`],
-        [
-          'Статус',
-          `<span style="display:inline-block;padding:3px 11px;border-radius:999px;background:${accent};color:#fff;font-size:13px;font-weight:700;">${escapeHtml(meta.label)}</span>`,
-        ],
-        ['Категория', escapeHtml(categoryLabel(signal.category))],
-        ['Дата изменения', escapeHtml(formatDateTime(changedAt))],
-        ['Кто изменил', escapeHtml(actor?.displayName ?? 'Система')],
-        ['Подрядчик', escapeHtml(signal.contractorName)],
-        ['Сектор', escapeHtml(signal.sector)],
-        ['Описание', escapeHtml(truncate(signal.description))],
-        ...noteRow,
-        ...attachmentsRow,
-      ])}`,
-    ctaLabel: 'Открыть карточку сигнала',
+      <p style="margin:0 0 14px;">${escapeHtml(lead)}</p>
+      ${commentHtml}
+      ${factsTable(rows)}`,
+    ctaLabel: 'Открыть сигнал',
     ctaUrl: url,
     footerNote: FOOTER_NOTE[audience] ?? FOOTER_NOTE.staff,
   });
 
   const text = [
-    EVENT_TITLE[event],
+    title,
     '',
-    `ID сигнала: ${signal.id}`,
-    `Статус: ${meta.label}`,
-    `Категория: ${categoryLabel(signal.category)}`,
-    `Дата изменения: ${formatDateTime(changedAt)}`,
+    lead,
+    ...(comment ? ['', `${commentLabel(action)}:`, comment] : []),
+    '',
+    `Сигнал: ${signalNumber(signal)}`,
+    `Статус: ${meta?.label ?? signal.status}`,
+    `Кто выполнил: ${actorName(actor)}`,
+    `Когда: ${formatDateTime(changedAt)}`,
+    ...(changes.length ? [`Изменено: ${changes.map((change) => change.label).join(', ')}`] : []),
+    ...(fileNames.length ? [`Файлы: ${fileNames.join(', ')}`] : []),
+    ...(signal.category ? [`Категория: ${categoryLabel(signal.category)}`] : []),
+    ...(assigneeNames ? [`Ответственные: ${assigneeNames}`] : []),
     `Подрядчик: ${signal.contractorName}`,
     `Сектор: ${signal.sector}`,
     `Описание: ${truncate(signal.description)}`,
     '',
-    `Карточка сигнала: ${url}`,
+    `Открыть сигнал: ${url}`,
   ].join('\n');
 
-  return { subject: `${EVENT_TITLE[event]} · ${categoryLabel(signal.category)} · ${signal.contractorName}`, html, text };
+  return { subject, html, text };
 }

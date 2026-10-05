@@ -9,7 +9,11 @@ import { UPLOADS_DIR } from '../config.js';
 import { badRequest, notFound } from '../http.js';
 import { MAX_FILE_SIZE, extensionOf, isAllowedFilename, mimeForFilename } from '../../shared/constants.js';
 
-export const ENTITY = { SIGNAL: 'signal', TASK: 'task' };
+/**
+ * К чему прикладывается файл. `event` — запись ленты сигнала: документы
+ * к возврату на доработку, к ответу подрядчика, к комментарию.
+ */
+export const ENTITY = { SIGNAL: 'signal', TASK: 'task', EVENT: 'event' };
 
 function toFile(row) {
   return row
@@ -137,6 +141,37 @@ export function listAttachmentsFor(entityType, entityIds) {
       WHERE a.entity_type = ? AND a.entity_id IN (${placeholders})
       ORDER BY a.position, f.created_at`,
     [entityType, ...entityIds],
+  );
+
+  const grouped = new Map();
+  for (const row of rows) {
+    const list = grouped.get(row.entity_id) ?? [];
+    list.push(toFile(row));
+    grouped.set(row.entity_id, list);
+  }
+  return grouped;
+}
+
+/**
+ * Файлы, приложенные к записям ленты, — для целого списка сигналов сразу.
+ *
+ * Отбор идет по сигналам, а не по записям: записей ленты у сотни сигналов —
+ * тысячи, и список их идентификаторов в IN (...) уперся бы в предел SQLite
+ * на число параметров запроса.
+ *
+ * @returns {Map<string, object[]>} идентификатор записи ленты → файлы
+ */
+export function listEventAttachmentsForSignals(signalIds) {
+  if (!signalIds.length) return new Map();
+
+  const placeholders = signalIds.map(() => '?').join(', ');
+  const rows = sql.all(
+    `SELECT a.entity_id, f.* FROM attachments a
+       JOIN files f ON f.id = a.file_id
+       JOIN signal_history h ON h.id = CAST(a.entity_id AS INTEGER)
+      WHERE a.entity_type = ? AND h.signal_id IN (${placeholders})
+      ORDER BY a.position, f.created_at`,
+    [ENTITY.EVENT, ...signalIds],
   );
 
   const grouped = new Map();

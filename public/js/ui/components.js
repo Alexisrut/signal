@@ -2,18 +2,21 @@
 
 import { html, escapeHtml, formatDateTime, formatDuration, truncate } from '../core/utils.js';
 import {
+  STATUS,
   STATUS_META,
   STATUS_ORDER,
   HISTORY_KIND,
   HISTORY_KIND_LABEL,
   ROLE_LABEL,
   ROLE,
+  SIGNAL_ACTION_LABEL,
   categoryShort,
   iconForFile,
   formatBytes,
   formatShortName,
+  signalNumber,
 } from '/shared/constants.js';
-import { escalationDueAt, isActive, isTerminal, resolutionMs } from '/shared/state-machine.js';
+import { escalationDueAt, isActive, isPaused, isTerminal, resolutionMs } from '/shared/state-machine.js';
 import { validateFiles, acceptAttribute, limitsHint } from '../domain/files.js';
 
 export function statusBadge(status, { withHint = false } = {}) {
@@ -25,8 +28,14 @@ export function statusBadge(status, { withHint = false } = {}) {
   </span>`;
 }
 
-export function statusLegend() {
-  const items = STATUS_ORDER.map(
+/** Сквозной номер сигнала — «№125». */
+export function numberTag(signal) {
+  const label = signalNumber(signal);
+  return label ? html`<span class="num" title="Номер сигнала">${label}</span>` : '';
+}
+
+export function statusLegend(statuses = STATUS_ORDER) {
+  const items = statuses.map(
     (status) => html`<li class="legend__item" title="${STATUS_META[status].hint}">
       <span class="legend__dot legend__dot--${status}"></span>
       <span class="legend__label">${STATUS_META[status].label}</span>
@@ -47,7 +56,9 @@ export function categoryTag(category, { hideUndistributed = false } = {}) {
 
 function actorLabel(entry) {
   if (entry.byRole === ROLE.SYSTEM) return 'Система';
-  return `${entry.byName} · ${(ROLE_LABEL[entry.byRole] ?? 'участник').toLowerCase()}`;
+  const role = (ROLE_LABEL[entry.byRole] ?? 'участник').toLowerCase();
+  // «Главный администратор · главный администратор» читается как опечатка.
+  return entry.byName?.toLowerCase() === role ? entry.byName : `${entry.byName} · ${role}`;
 }
 
 /* ------------------------------ время решения -------------------------------- */
@@ -61,12 +72,21 @@ function actorLabel(entry) {
  */
 export function resolutionTimer(signal, { now = Date.now(), size = 'md' } = {}) {
   const done = isTerminal(signal.status);
+  // Часы стоят и у незакрытого сигнала — пока он на доработке у подрядчика.
+  const waiting = !done && isPaused(signal.status);
   const paused = (signal.pausedMs ?? 0) > 0;
+  const label = done
+    ? 'Время решения'
+    : waiting
+      ? 'Часы на паузе'
+      : signal.status === STATUS.INTAKE
+        ? 'С момента подачи'
+        : 'В работе уже';
 
   return html`<div class="timer timer--${size} ${done ? 'timer--done' : 'timer--running'}">
     <span class="timer__icon" aria-hidden="true">◷</span>
     <span class="timer__body">
-      <span class="timer__label">${done ? 'Время решения' : 'В работе уже'}</span>
+      <span class="timer__label">${label}</span>
       <strong class="timer__value">${formatDuration(resolutionMs(signal, now))}</strong>
     </span>
     ${[paused ? html`<span class="timer__paused" title="Пауза за время закрытия вычтена">с паузой</span>` : '']}
@@ -226,7 +246,8 @@ export function bindFileField(root) {
 export function signalCard(signal, { href, now = Date.now(), unread = 0 } = {}) {
   return html`<a class="card card--${signal.status} ${unread ? 'has-unread' : ''}" href="${href}">
     <div class="card__head">
-      ${[statusBadge(signal.status)]} ${[categoryTag(signal.category)]} ${[attachmentsBadge(signal.attachments)]}
+      ${[numberTag(signal)]} ${[statusBadge(signal.status)]} ${[categoryTag(signal.category)]}
+      ${[attachmentsBadge(signal.attachments)]}
       ${[unreadBadge(unread)]}
     </div>
     <h3 class="card__title">${signal.contractorName}</h3>
@@ -262,51 +283,38 @@ function editDiff(entry) {
   return html`<ul class="diff">${rows}</ul>`;
 }
 
-/** Записи, которые видит подрядчик: только системный след смены статуса. */
-const isStatusEntry = (entry) =>
-  entry.kind === HISTORY_KIND.CREATE || entry.kind === HISTORY_KIND.STATUS || entry.kind === HISTORY_KIND.REOPEN;
+/** Меняет ли запись статус сигнала — такие записи помечаются цветом нового статуса. */
+const changesStatus = (entry) =>
+  Boolean(entry.to) && (entry.kind === HISTORY_KIND.CREATE || (entry.from && entry.from !== entry.to));
 
 /**
- * Лента истории: создание, смены статуса, правки и принятие в работу.
- * Одна и та же для сигналов и задач — отличаются только подписи статусов.
+ * Лента событий: создание, действия входного контроля, смены статуса,
+ * комментарии, правки, назначения. Одна и та же для сигналов и задач —
+ * отличаются только подписи статусов.
  *
- * `statusOnly` оставляет голый журнал статусов без авторов, заметок и правок —
- * этот режим включен для подрядчика: внутренняя переписка и перестановки
- * исполнителей его карточки не касаются.
+ * Что именно показывать, решает сервер: подрядчику он отдает ленту уже
+ * без внутренних записей сотрудников.
  */
-export function historyList(history, { badgeFor = statusBadge, statusMeta = STATUS_META, statusOnly = false } = {}) {
+export function historyList(history, { badgeFor = statusBadge, statusMeta = STATUS_META } = {}) {
   const shortName = (status) => statusMeta[status]?.short ?? statusMeta[status]?.label ?? status;
 
   const items = [...(history ?? [])]
-    .filter((entry) => !statusOnly || isStatusEntry(entry))
     .sort((a, b) => a.at - b.at)
     .map((entry) => {
-      if (statusOnly) {
-        const transition = entry.from ? `${shortName(entry.from)} → ${shortName(entry.to)}` : 'Сигнал зарегистрирован';
-        return html`<li class="history__item history__item--${entry.to}">
-          <div class="history__marker"></div>
-          <div class="history__body">
-            <div class="history__row">
-              ${[badgeFor(entry.to)]}
-              <span class="history__time">${formatDateTime(entry.at)}</span>
-            </div>
-            <div class="history__meta">${transition}</div>
-          </div>
-        </li>`;
-      }
+      const statusEvent = changesStatus(entry);
+      const marker = statusEvent ? entry.to : entry.kind;
 
-      const isStatusEvent = entry.kind === HISTORY_KIND.STATUS || entry.kind === HISTORY_KIND.CREATE;
-      const marker = isStatusEvent && entry.to ? entry.to : entry.kind;
+      const head = statusEvent
+        ? badgeFor(entry.to)
+        : html`<span class="history__kind history__kind--${entry.kind}">
+            ${HISTORY_KIND_LABEL[entry.kind] ?? entry.kind}
+          </span>`;
 
-      const head =
-        isStatusEvent && entry.to
-          ? badgeFor(entry.to)
-          : html`<span class="history__kind history__kind--${entry.kind}">
-              ${HISTORY_KIND_LABEL[entry.kind] ?? entry.kind}
-            </span>`;
-
+      // У действия своя подпись («Возвращен подрядчику на доработку»), у старых
+      // записей без нее — переход «откуда → куда».
+      const actionLabel = statusEvent ? SIGNAL_ACTION_LABEL[entry.details?.action] : null;
       const transition =
-        entry.kind === HISTORY_KIND.STATUS && entry.from ? `${shortName(entry.from)} → ${shortName(entry.to)} · ` : '';
+        statusEvent && !actionLabel && entry.from ? `${shortName(entry.from)} → ${shortName(entry.to)}` : '';
 
       return html`<li class="history__item history__item--${marker}">
         <div class="history__marker"></div>
@@ -315,9 +323,15 @@ export function historyList(history, { badgeFor = statusBadge, statusMeta = STAT
             ${[head]}
             <span class="history__time">${formatDateTime(entry.at)}</span>
           </div>
-          <div class="history__meta">${transition}${actorLabel(entry)}</div>
+          ${[actionLabel ? html`<div class="history__action">${actionLabel}</div>` : '']}
+          <div class="history__meta">${transition}${transition ? ' · ' : ''}${actorLabel(entry)}</div>
           ${[entry.note ? html`<div class="history__note">${entry.note}</div>` : '']}
           ${[editDiff(entry)]}
+          ${[
+            entry.files?.length
+              ? html`<div class="history__files">${[attachmentsList(entry.files, { compact: true })]}</div>`
+              : '',
+          ]}
         </div>
       </li>`;
     });
@@ -385,8 +399,8 @@ export function emptyState(title, text, actionHtml = '') {
   </div>`;
 }
 
-export function statCounters(counters) {
-  const cells = STATUS_ORDER.map(
+export function statCounters(counters, statuses = STATUS_ORDER) {
+  const cells = statuses.map(
     (status) => html`<div class="stat stat--${status}">
       <span class="stat__value">${counters[status]}</span>
       <span class="stat__label">${STATUS_META[status].label}</span>

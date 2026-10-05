@@ -4,10 +4,22 @@
  * одинаковыми правилами, без риска разойтись.
  */
 
-import { ACCOUNT_TYPE_IDS, EMAIL_REGEX } from './constants.js';
+import { ACCOUNT_TYPE_IDS, EMAIL_REGEX, MAX_COMMENT_LENGTH } from './constants.js';
 
 export function isBlank(value) {
   return String(value ?? '').trim().length === 0;
+}
+
+/**
+ * Комментарий к действию: пояснение к возврату на доработку, ответ подрядчика,
+ * реплика в переписке по сигналу.
+ * @returns {string|null} текст ошибки или null
+ */
+export function validateComment(text, { required = true } = {}) {
+  const value = String(text ?? '').trim();
+  if (!value) return required ? 'Напишите комментарий' : null;
+  if (value.length > MAX_COMMENT_LENGTH) return `Комментарий длиннее ${MAX_COMMENT_LENGTH} символов`;
+  return null;
 }
 
 export function validateSignalInput({ contractorName, sector, description }) {

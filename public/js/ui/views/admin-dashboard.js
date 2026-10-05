@@ -9,12 +9,12 @@
  */
 
 import { html } from '../../core/utils.js';
-import { ASSIGNMENT, CATEGORIES, STATUS_META, STATUS_ORDER, categoryLabel } from '/shared/constants.js';
+import { ASSIGNMENT, CATEGORIES, DASHBOARD_STATUSES, STATUS_META, categoryLabel } from '/shared/constants.js';
 import { isActive, isAssignedTo } from '/shared/state-machine.js';
 import { currentActor, isAdmin, isSuperadmin, myCategories } from '../../domain/session.js';
 import {
   listAll,
-  listUndistributed,
+  listAwaitingIntake,
   filterSignals,
   countByStatus,
   resolutionStats,
@@ -27,7 +27,7 @@ import { showToast } from '../chrome.js';
 const STATUS_FILTERS = [
   { id: 'all', label: 'Все статусы' },
   { id: 'active', label: 'Только активные' },
-  ...STATUS_ORDER.map((status) => ({ id: status, label: STATUS_META[status].label })),
+  ...DASHBOARD_STATUSES.map((status) => ({ id: status, label: STATUS_META[status].label })),
 ];
 
 function chipLink(filter, current, buildHref) {
@@ -89,7 +89,7 @@ export const adminDashboardView = {
     const all = listAll() ?? [];
     const visible = filterSignals(all, { category, status });
     const counters = countByStatus(all);
-    const waiting = (listUndistributed() ?? []).length;
+    const waiting = listAwaitingIntake().length;
 
     /**
      * Индикатор новых изменений видят администраторы — по всем своим карточкам,
@@ -133,7 +133,7 @@ export const adminDashboardView = {
         ? html`<div class="board board--${category === 'all' ? 'wide' : 'single'}">${columns}</div>`
         : emptyState(
             'В доступных вам категориях пока нет сигналов',
-            'Сигнал появится здесь, как только главный администратор распределит его в вашу категорию.',
+            'Сигнал появится здесь, как только пройдет входной контроль и будет распределен в вашу категорию.',
           );
 
     return html`
@@ -148,7 +148,7 @@ export const adminDashboardView = {
             ${[
               isSuperadmin(actor)
                 ? html`<a class="btn btn--primary" href="#/admin/distribution"
-                    >Распределение${waiting ? ` · ${waiting}` : ''}</a
+                    >Входной контроль${waiting ? ` · ${waiting}` : ''}</a
                   >`
                 : '',
             ]}
@@ -158,13 +158,13 @@ export const adminDashboardView = {
         ${[
           isSuperadmin(actor) && waiting
             ? html`<div class="banner banner--info">
-                Ожидают распределения: <b>${waiting}</b>.
+                Ожидают входного контроля: <b>${waiting}</b>.
                 <a class="link" href="#/admin/distribution">Открыть раздел</a>
               </div>`
             : '',
         ]}
 
-        ${[statCounters(counters)]}
+        ${[statCounters(counters, DASHBOARD_STATUSES)]}
 
         ${[resolutionPanel(resolutionStats(), { open: statsOpen, href: href(category, status, !statsOpen) })]}
 
@@ -181,7 +181,7 @@ export const adminDashboardView = {
           </div>
         </div>
 
-        ${[statusLegend()]}
+        ${[statusLegend(DASHBOARD_STATUSES)]}
         ${[
           all.length && !visible.length
             ? html`<p class="board__empty">Под выбранные фильтры не подходит ни один сигнал.</p>`

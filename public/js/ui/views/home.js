@@ -4,7 +4,7 @@ import { html } from '../../core/utils.js';
 import { CATEGORIES } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 import { currentActor, isAuthenticated, isContractor, isStaff, isSuperadmin } from '../../domain/session.js';
-import { listMine, listUndistributed } from '../../domain/signals.js';
+import { listMine, listAwaitingIntake } from '../../domain/signals.js';
 
 export const homeView = {
   live: true,
@@ -34,7 +34,7 @@ export const homeView = {
         <a class="btn btn--secondary btn--lg" href="#/my">Мои сигналы${mine.length ? ` (${mine.length})` : ''}</a>
       `;
     } else if (isStaff(actor)) {
-      const waiting = (listUndistributed() ?? []).length;
+      const waiting = listAwaitingIntake().length;
       // Сотрудник тоже заводит проблемы, и кнопка нужна ему на видном месте:
       // администратор и руководитель сталкиваются с ними на объекте не реже.
       actions = html`
@@ -43,7 +43,7 @@ export const homeView = {
         ${[
           isSuperadmin(actor)
             ? html`<a class="btn btn--secondary btn--lg" href="#/admin/distribution"
-                >Распределение${waiting ? ` (${waiting})` : ''}</a
+                >Входной контроль${waiting ? ` (${waiting})` : ''}</a
               >`
             : '',
         ]}

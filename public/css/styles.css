@@ -40,6 +40,14 @@
   --ink-green: #7ee2a4;
   --ink-gray: #b3bfcd;
 
+  /* Входной контроль: проверка — синий, доработка у подрядчика — фиолетовый. */
+  --intake: #4f8cff;
+  --rework: #b07cff;
+  --tint-intake: rgba(79, 140, 255, 0.14);
+  --tint-rework: rgba(176, 124, 255, 0.14);
+  --ink-intake: #a9c9ff;
+  --ink-rework: #d3aaff;
+
   --topbar-bg: rgba(13, 17, 23, 0.82);
   --column-bg: rgba(22, 29, 40, 0.6);
   --glow-1: rgba(79, 140, 255, 0.12);
@@ -78,6 +86,13 @@
   --ink-red: #b32d18;
   --ink-green: #10713a;
   --ink-gray: #4c5a70;
+
+  --intake: #2f6bdd;
+  --rework: #7b3fbf;
+  --tint-intake: rgba(47, 107, 221, 0.12);
+  --tint-rework: rgba(123, 63, 191, 0.12);
+  --ink-intake: #2457b8;
+  --ink-rework: #6a33a8;
 
   --topbar-bg: rgba(255, 255, 255, 0.88);
   --column-bg: rgba(220, 227, 238, 0.55);
@@ -3218,4 +3233,162 @@ body.is-modal-open {
   .modal__window {
     max-height: 92vh;
   }
+}
+
+
+/* ==========================================================================
+   Входной контроль, переписка по сигналу
+   ========================================================================== */
+
+/* Статусы входного контроля — те же элементы, что у цветов светофора. */
+.badge--intake { background: var(--tint-intake); border-color: var(--intake); color: var(--ink-intake); }
+.badge--rework { background: var(--tint-rework); border-color: var(--rework); color: var(--ink-rework); }
+.card--intake, .row--intake { border-left-color: var(--intake); }
+.card--rework, .row--rework { border-left-color: var(--rework); }
+.detail--intake { border-top-color: var(--intake); }
+.detail--rework { border-top-color: var(--rework); }
+.history__item--intake .history__marker { background: var(--intake); }
+.history__item--rework .history__marker { background: var(--rework); }
+.chip--intake.is-active { background: var(--tint-intake); border-color: var(--intake); color: var(--ink-intake); }
+.chip--rework.is-active { background: var(--tint-rework); border-color: var(--rework); color: var(--ink-rework); }
+.chip--static.chip--intake { color: var(--ink-intake); }
+.chip--static.chip--rework { color: var(--ink-rework); }
+.stat--intake { border-left: 3px solid var(--intake); }
+.stat--rework { border-left: 3px solid var(--rework); }
+.legend__dot--intake { background: var(--intake); }
+.legend__dot--rework { background: var(--rework); }
+
+/* Сквозной номер сигнала. */
+.num {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-2);
+  font-family: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+/*
+ * Плашка «что сейчас происходит с сигналом и что делать» — над описанием.
+ * Цвет полосы — цвет статуса.
+ */
+.callout {
+  border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.callout--intake { border-left-color: var(--intake); background: var(--tint-intake); }
+.callout--rework { border-left-color: var(--rework); background: var(--tint-rework); }
+
+.callout__title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.callout__text {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.callout__quote {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.callout__meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.callout__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* Переписка: заметки в ленте многострочные, файлы — компактным списком под текстом. */
+.history__note {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history__files {
+  margin-top: 8px;
+}
+
+.history__kind--comment {
+  border-color: rgba(79, 140, 255, 0.45);
+  color: #a9c9ff;
+}
+
+.history__item--comment .history__marker { background: var(--accent); }
+
+.history__action {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+:root[data-theme='light'] .history__kind--comment {
+  color: var(--accent);
+}
+
+/* Форма комментария под лентой событий. */
+.comment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.comment-form__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Группы раздела «Входной контроль». */
+.intake-group + .intake-group {
+  margin-top: 28px;
+}
+
+.intake-group__title {
+  font-size: 15px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.intake-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* Окно действия: подсказка над полем комментария. */
+.modal__lead {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: left;
 }

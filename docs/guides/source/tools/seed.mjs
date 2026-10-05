@@ -97,20 +97,23 @@ const ids = (ctx) => api(ctx, 'GET', '/api/state').then((s) => s.assignables);
 const assignables = await ids(sa);
 const idOf = (login) => assignables.find((a) => a.displayName === USERS[login].displayName).id;
 
-// Распределение главным администратором
+// Входной контроль: s7 возвращен подрядчику на доработку, s6 ждет проверки.
+await api(sa, 'POST', `/api/signals/${s7}/action`, { action: 'intake-return', comment: 'Приложите спецификацию с отметкой, какие именно 12 позиций не совпадают, и лист проекта для сравнения.' });
+
+// Распределение главным администратором — передача в работу ответственным
 await api(sa, 'POST', `/api/signals/${s1}/category`, { category: 'design', assignees: [idOf('manager1')], note: 'Срочно запросить чертежи у проектного отдела, срок — до конца недели.' });
 await api(sa, 'POST', `/api/signals/${s2}/category`, { category: 'supply', assignees: [idOf('manager2')], note: 'Связаться с поставщиком, уточнить дату отгрузки.' });
-await api(sa, 'POST', `/api/signals/${s3}/category`, { category: 'admin_finance' });
+await api(sa, 'POST', `/api/signals/${s3}/category`, { category: 'admin_finance', assignees: [idOf('admin')] });
 await api(sa, 'POST', `/api/signals/${s4}/category`, { category: 'other', assignees: [idOf('manager2')] });
-await api(sa, 'POST', `/api/signals/${s5}/category`, { category: 'design' });
+await api(sa, 'POST', `/api/signals/${s5}/category`, { category: 'design', assignees: [idOf('manager1')] });
 await api(sa, 'POST', `/api/signals/${s8}/category`, { category: 'supply', assignees: [idOf('manager2')], note: 'Проверить условия хранения на складе.' });
-// s6, s7 остаются нераспределенными
 
-// Статусы
-await api(sa, 'POST', `/api/signals/${s3}/status`, { status: 'green' });           // решен главным админом
-await api(sa, 'POST', `/api/signals/${s4}/status`, { status: 'gray' });            // отклонен
-await api(c1, 'POST', `/api/signals/${s5}/status`, { status: 'green' });           // автор сам закрыл
-await api(adm, 'POST', `/api/signals/${s8}/status`, { status: 'red' });            // ручная эскалация админом
+// Действия
+await api(m2, 'POST', `/api/signals/${s2}/comments`, { text: 'Поставщик подтвердил отгрузку на четверг, номер заказа 4471.' });
+await api(sa, 'POST', `/api/signals/${s3}/action`, { action: 'resolve', comment: 'Акт подписан 12.09, оплата прошла.' });
+await api(sa, 'POST', `/api/signals/${s4}/action`, { action: 'reject', comment: 'Дублирует сигнал по щитовой, принятый ранее.' });
+await api(c1, 'POST', `/api/signals/${s5}/action`, { action: 'resolve', comment: 'Ключи передали, работы возобновлены.' });
+await api(adm, 'POST', `/api/signals/${s8}/action`, { action: 'escalate' });   // ручная эскалация
 // Правка карточки администратором
 await api(adm, 'PUT', `/api/signals/${s1}`, { contractorName: 'ООО «СтройМонтаж»', sector: 'Блок Б, 3 этаж, помещение 305', description: 'Отсутствует проектная документация на монтаж вентиляции — бригада не может продолжать работы без утвержденных чертежей.' });
 

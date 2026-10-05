@@ -16,7 +16,7 @@ import {
   STATUS_META,
   categoryLabel,
 } from '../../shared/constants.js';
-import { isTerminal } from '../../shared/state-machine.js';
+import { resolutionMs } from '../../shared/state-machine.js';
 
 const DATE_FORMAT = 'dd.mm.yyyy hh:mm';
 
@@ -72,6 +72,7 @@ export async function buildSignalsWorkbook(filters, actor) {
 
   const sheet = workbook.addWorksheet('Сигналы');
   sheet.columns = [
+    { header: '№', key: 'number', width: 8 },
     { header: 'ID', key: 'id', width: 30 },
     { header: 'Категория', key: 'category', width: 26 },
     { header: 'Подрядчик', key: 'contractor', width: 28 },
@@ -91,13 +92,23 @@ export async function buildSignalsWorkbook(filters, actor) {
   // у активного сигнала — на момент формирования отчета.
   const now = Date.now();
   const resolutionHours = (row) => {
-    const end = isTerminal(row.status) ? (row.closed_at ?? row.updated_at) : now;
-    const ms = Math.max(0, end - row.created_at - (row.paused_ms ?? 0));
+    const ms = resolutionMs(
+      {
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        closedAt: row.closed_at,
+        statusAt: row.status_at,
+        pausedMs: row.paused_ms,
+      },
+      now,
+    );
     return Math.round((ms / 3600000) * 10) / 10;
   };
 
   for (const row of rows) {
     sheet.addRow({
+      number: row.number ?? null,
       id: String(row.id),
       category: categoryLabel(row.category),
       contractor: String(row.contractor_name),

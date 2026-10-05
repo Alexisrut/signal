@@ -40,7 +40,10 @@ export const api = {
 
   createSignal: (input) => request('POST', '/api/signals', input),
   updateSignal: (id, input) => request('PUT', `/api/signals/${encodeURIComponent(id)}`, input),
-  changeSignalStatus: (id, status) => request('POST', `/api/signals/${encodeURIComponent(id)}/status`, { status }),
+  signalAction: (id, action, { comment, fileIds } = {}) =>
+    request('POST', `/api/signals/${encodeURIComponent(id)}/action`, { action, comment, fileIds }),
+  commentSignal: (id, text, fileIds) =>
+    request('POST', `/api/signals/${encodeURIComponent(id)}/comments`, { text, fileIds }),
   reopenSignal: (id, note) => request('POST', `/api/signals/${encodeURIComponent(id)}/reopen`, { note }),
   assignSignal: (id, assign, userId) =>
     request('POST', `/api/signals/${encodeURIComponent(id)}/assign`, { assign, userId }),

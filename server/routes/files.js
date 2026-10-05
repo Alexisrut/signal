@@ -4,7 +4,7 @@ import Busboy from 'busboy';
 
 import { sendJson, badRequest, notFound, unauthorized, contentDisposition } from '../http.js';
 import { ENTITY, getFileRow, listFileOwners, openFileStream, storeFile } from '../domain/files.js';
-import { getForActor } from '../domain/signals.js';
+import { getForActor, signalOfEvent } from '../domain/signals.js';
 import { guard, LIMITS } from '../ratelimit.js';
 import { MAX_FILE_SIZE } from '../../shared/constants.js';
 
@@ -75,7 +75,8 @@ export async function uploadFiles(req, res, { actor }) {
 /**
  * Отдача вложения.
  *
- * Право на файл выводится из права на сигнал, к которому он приложен: знать
+ * Право на файл выводится из права на сигнал, к которому он приложен, — самому
+ * сигналу или записи в его ленте (возврат на доработку, комментарий): знать
  * ссылку недостаточно. Свой только что загруженный файл автор видит и до
  * привязки к сигналу — иначе форма создания не смогла бы его показать.
  * Отказ отдается как 404: по коду ответа не должно быть видно, существует
@@ -88,9 +89,14 @@ function assertMayRead(fileId, actor) {
   if (!row) throw notFound('Файл не найден');
   if (row.uploaded_by && row.uploaded_by === actor.id) return;
 
-  const visible = listFileOwners(fileId).some(
-    (owner) => owner.entity_type === ENTITY.SIGNAL && getForActor(owner.entity_id, actor),
-  );
+  const visible = listFileOwners(fileId).some((owner) => {
+    if (owner.entity_type === ENTITY.SIGNAL) return Boolean(getForActor(owner.entity_id, actor));
+    if (owner.entity_type === ENTITY.EVENT) {
+      const signalId = signalOfEvent(owner.entity_id, actor);
+      return Boolean(signalId && getForActor(signalId, actor));
+    }
+    return false;
+  });
   if (!visible) throw notFound('Файл не найден');
 }
 

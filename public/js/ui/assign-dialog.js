@@ -28,7 +28,9 @@ import { openModal } from './modal.js';
  * @param {string} [options.title] заголовок окна
  * @param {string} [options.confirmLabel] подпись кнопки подтверждения
  * @param {boolean} [options.allowEmpty] можно ли подтвердить, никого не выбрав
- *   (при распределении — да: категорию назначают и без ответственных)
+ *   (при смене категории — да: ответственные у сигнала уже есть)
+ * @param {boolean} [options.requireAssignee] нужен ли хотя бы один ответственный
+ *   (на входном контроле — да: без него сигнал ушел бы в работу ничьим)
  * @returns {Promise<{assignees: string[], note: string}|null>} null — окно закрыли
  */
 export function openAssignDialog({
@@ -37,6 +39,7 @@ export function openAssignDialog({
   title,
   confirmLabel = 'Назначить',
   allowEmpty = false,
+  requireAssignee = false,
 }) {
   const already = new Set((signal?.assignees ?? []).map((person) => person.id));
   const candidates = listAssignables().filter((person) => canCurate(person, category));
@@ -119,6 +122,11 @@ export function openAssignDialog({
       const assignees = [...root.querySelectorAll('[name="assignee"]:checked')].map((input) => input.value);
       const note = root.querySelector('[name="note"]').value.trim();
 
+      if (requireAssignee && !assignees.length) {
+        root.querySelector('[data-role="picker-error"]').textContent =
+          'Выберите хотя бы одного ответственного — сигнал уходит в работу к нему.';
+        return null;
+      }
       if (!allowEmpty && !assignees.length && !note) {
         root.querySelector('[data-role="picker-error"]').textContent =
           'Выберите хотя бы одного сотрудника или напишите заметку.';

@@ -1,28 +1,36 @@
 /**
  * Подсистема уведомлений.
  *
- * Две точки входа: `notifySignalEvent` — после перехода конечного автомата,
- * `notifyAssignment` — после выдачи задачи.
+ * По сигналу письмо уходит о каждом действии: создание, возврат на доработку,
+ * дополнения подрядчика, распределение, комментарии, эскалация, закрытие.
+ * Точка входа одна — `notifySignal`, ее вызывает сервис сигналов после
+ * каждого действия.
  *
- * Получателей два вида:
- *   • сотрудники — по личным подпискам (общий тумблер плюс набор событий)
- *     И по видимости сигнала (см. staffRecipients);
- *   • автор-подрядчик — по одному тумблеру и только на смену статуса
- *     его собственной проблемы, о создании он и так знает.
+ * Кому:
+ *   • автору сигнала — подрядчику (или сотруднику, если сигнал подал он);
+ *   • ответственным, назначенным на сигнал;
+ *   • главному администратору — письма входного контроля всегда, остальные
+ *     на период тестирования (MAIL_COPY_SUPERADMIN, см. config.js).
+ *
+ * Выборочной подписки на события нет: у каждого один общий тумблер. Все
+ * письма одного сигнала приходят с одной и той же темой — «Сигнал №125.
+ * Недопоставка кабельной продукции» — и почта собирает их в одну цепочку.
  */
 
 import { sql } from '../db.js';
-import { APP_URL } from '../config.js';
-import { toUser } from '../identity.js';
+import { APP_URL, MAIL_COPY_SUPERADMIN } from '../config.js';
+import { findUser, toUser } from '../identity.js';
 import { sendMail, deliveryMode } from './transport.js';
 import { verificationEmail, passwordResetEmail, signalNotificationEmail } from './templates.js';
 
 import {
   ROLE,
-  isSuperadminRole,
-  NOTIFICATION_EVENT,
+  INTAKE_STATUSES,
+  SIGNAL_ACTION,
   EMAIL_TOKEN_TTL_MS,
   RESET_TOKEN_TTL_MS,
+  deriveSignalTopic,
+  signalNumber,
   wantsNotification,
 } from '../../shared/constants.js';
 
@@ -64,87 +72,84 @@ export async function sendPasswordResetEmail(user, token) {
   return { mode: deliveryMode, ...result };
 }
 
-/**
- * Виден ли сотруднику этот сигнал. Повторяет правило выборки дашборда
- * (listForAdmin): главный администратор видит все, администратор и
- * руководитель — только закрепленные за ними категории, а нераспределенный
- * сигнал не виден никому, кроме главного администратора.
- */
-function canSee(user, signal) {
-  if (isSuperadminRole(user.role)) return true;
-  if (!signal.category) return false;
-  return (user.categories ?? []).includes(signal.category);
+/* --------------------------------- сигналы ----------------------------------- */
+
+/** Тема всех писем по сигналу — неизменная от создания до закрытия. */
+export function signalSubject(signal) {
+  return `Сигнал ${signalNumber(signal)}. ${signal.topic ?? deriveSignalTopic(signal.description)}`;
 }
 
-/**
- * Кому уходит письмо по событию сигнала.
- *
- * Раньше рассылка шла всем сотрудникам, подписанным на событие, — и новый
- * сигнал будил всю платформу, включая тех, кто его даже открыть не может.
- * Теперь работают три правила, в этом порядке:
- *
- *   1. Назначенный на задачу получает по ней все. Это и есть «уведомление
- *      исполнителю после назначения ответственным».
- *   2. Руководитель без назначения не получает ничего: до выдачи задачи
- *      он к ней отношения не имеет.
- *   3. Администраторам приходит то, что им видно: главному — весь поток,
- *      обычному — сигналы его категорий.
- *
- * Из третьего правила следует и поведение при создании: нераспределенный
- * сигнал видит только главный администратор, он же его и распределяет,
- * поэтому письмо о новом обращении уходит ему одному.
- *
- * Личная подписка проверяется сверх этих правил и может лишь сузить список.
- */
-function staffRecipients(event, signal) {
-  const assigned = new Set((signal.assignees ?? []).map((person) => person.id));
+const THREAD_DOMAIN = (() => {
+  try {
+    return new URL(APP_URL).hostname || 'signal.local';
+  } catch {
+    return 'signal.local';
+  }
+})();
 
-  return sql
-    .all(`SELECT * FROM users WHERE role IN (?, ?, ?)`, [ROLE.ADMIN, ROLE.MANAGER, ROLE.SUPERADMIN])
-    .map(toUser)
-    .filter((user) => {
-      if (!user.email) return false;
-      if (!wantsNotification(user.notify, event)) return false;
-      if (assigned.has(user.id)) return true;
-      if (user.role === ROLE.MANAGER) return false;
-      return canSee(user, signal);
-    });
+/** Корень почтовой цепочки сигнала: на него ссылаются все письма по нему. */
+function threadRoot(signal) {
+  return `<signal.${signal.id}@${THREAD_DOMAIN}>`;
 }
 
-/**
- * Автор сигнала, если это подрядчик с включенным тумблером.
- * Событие создания ему не отправляется: письмо о собственном обращении —
- * шум, тумблер обещает письма «при смене статуса проблемы».
- */
-function contractorRecipient(signal, event) {
-  if (event === NOTIFICATION_EVENT.CREATE) return null;
-
-  const author = toUser(sql.get(`SELECT * FROM users WHERE id = ?`, [signal.authorId]));
-  if (!author || author.role !== ROLE.CONTRACTOR) return null;
-  if (!author.email || author.notify?.enabled === false) return null;
-  return author;
-}
+/** Действия входного контроля: их главный администратор получает всегда — действовать ему. */
+const INTAKE_ACTIONS = new Set([SIGNAL_ACTION.CREATE, SIGNAL_ACTION.RESUBMIT]);
 
 /**
- * @param {string|null} event идентификатор события автомата (null — рассылка не нужна)
- * @param {object} signal сигнал в актуальном состоянии
- * @param {object} actor кто инициировал переход
+ * Кому уходит письмо о действии с сигналом. Исполнитель действия тоже
+ * в списке: у каждого участника в почте должна быть вся цепочка целиком,
+ * включая собственные шаги.
  */
-export function notifySignalEvent(event, signal, actor) {
-  if (!event) return { sent: 0, recipients: [] };
+function recipientsFor(action, signal, from) {
+  const people = new Map();
+  const add = (user) => {
+    if (!user?.email || people.has(user.id) || !wantsNotification(user.notify)) return;
+    people.set(user.id, user);
+  };
 
-  const staff = staffRecipients(event, signal);
-  const author = contractorRecipient(signal, event);
-  if (!staff.length && !author) return { sent: 0, recipients: [] };
+  add(findUser(signal.authorId));
+  for (const person of signal.assignees ?? []) add(findUser(person.id));
 
-  for (const person of staff) deliver(person, { event, signal, actor, url: signalUrl(signal.id) });
-  if (author) {
-    deliver(author, { event, signal, actor, url: contractorSignalUrl(signal.id), audience: 'contractor' });
+  // Входной контроль — и до, и после действия: сигнал, закрытый автором прямо
+  // с проверки, исчезает из очереди главного администратора, и знать ему об этом нужно.
+  const intakeStage =
+    INTAKE_ACTIONS.has(action) || INTAKE_STATUSES.includes(signal.status) || INTAKE_STATUSES.includes(from);
+  if (MAIL_COPY_SUPERADMIN || intakeStage) {
+    sql
+      .all(`SELECT * FROM users WHERE role = ?`, [ROLE.SUPERADMIN])
+      .map(toUser)
+      .forEach(add);
   }
 
-  const total = staff.length + (author ? 1 : 0);
-  console.info(`[notifier] событие ${event} по сигналу ${signal.id} → ${total} получателей`);
-  return { sent: total, recipients: [...staff.map((person) => person.email), ...(author ? [author.email] : [])] };
+  return [...people.values()];
+}
+
+/**
+ * @param {string} action действие из SIGNAL_ACTION
+ * @param {object} signal сигнал в актуальном состоянии
+ * @param {object} actor кто выполнил действие
+ * @param {object} [extra] комментарий, изменения, файлы, назначенные — то, что войдет в письмо;
+ *   `from` — статус до действия
+ */
+export function notifySignal(action, signal, actor, extra = {}) {
+  const recipients = recipientsFor(action, signal, extra.from);
+  if (!recipients.length) return { sent: 0, recipients: [] };
+
+  const subject = signalSubject(signal);
+  for (const person of recipients) {
+    const audience = person.role === ROLE.CONTRACTOR ? 'contractor' : 'staff';
+    const url = audience === 'contractor' ? contractorSignalUrl(signal.id) : signalUrl(signal.id);
+    deliver(person, {
+      ...signalNotificationEmail({ action, signal, actor, url, audience, subject, ...extra }),
+      kind: `signal:${action}`,
+      entityId: signal.id,
+      references: threadRoot(signal),
+      headers: { 'Thread-Topic': subject },
+    });
+  }
+
+  console.info(`[notifier] ${action} по сигналу ${signalNumber(signal)} → ${recipients.length} получателей`);
+  return { sent: recipients.length, recipients: recipients.map((person) => person.email) };
 }
 
 /**
@@ -152,39 +157,6 @@ export function notifySignalEvent(event, signal, actor) {
  * уходит в фоне: сбой доставки фиксируется в mail_log и в журнале, но не
  * роняет операцию, которая его вызвала.
  */
-function deliver(person, { event, signal, actor, url, audience = 'staff' }) {
-  const message = signalNotificationEmail({ event, signal, actor, url, audience });
-  sendMail({ ...message, to: person.email, kind: `signal:${event}`, entityId: signal.id }).catch((error) =>
-    console.error('[notifier] сбой отправки', error),
-  );
-}
-
-/**
- * Письмо тем, кого только что назначили ответственными за сигнал.
- *
- * Отдельная точка входа, а не событие автомата: назначение статуса не меняет,
- * а получатели тут не «все, кому видно», а ровно те, кого добавили этим
- * действием. Уже назначенным ранее повторное письмо не уходит.
- *
- * @param {object} signal сигнал в актуальном состоянии
- * @param {Array<{id: string}>} people кого добавили именно сейчас
- * @param {object} actor кто выдал задачу
- */
-export function notifyAssignment(signal, people, actor) {
-  const event = NOTIFICATION_EVENT.ASSIGN;
-
-  const recipients = (people ?? [])
-    .map((person) => toUser(sql.get(`SELECT * FROM users WHERE id = ?`, [person.id])))
-    .filter(Boolean)
-    // Письмо самому себе о собственном действии — шум: главный администратор
-    // нередко назначает задачу на себя и уже знает об этом.
-    .filter((user) => user.id !== actor?.id)
-    .filter((user) => Boolean(user.email) && wantsNotification(user.notify, event));
-
-  if (!recipients.length) return { sent: 0, recipients: [] };
-
-  for (const person of recipients) deliver(person, { event, signal, actor, url: signalUrl(signal.id) });
-
-  console.info(`[notifier] назначение по сигналу ${signal.id} → ${recipients.length} получателей`);
-  return { sent: recipients.length, recipients: recipients.map((person) => person.email) };
+function deliver(person, message) {
+  sendMail({ ...message, to: person.email }).catch((error) => console.error('[notifier] сбой отправки', error));
 }

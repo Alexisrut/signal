@@ -58,7 +58,15 @@ function safeSlug(value) {
 }
 
 /**
- * @param {{to: string, subject: string, html: string, text: string, kind: string, entityId?: string}} message
+ * Все письма системы уходят с одного адреса — SMTP.from (MAIL_FROM): по нему
+ * в почтовом клиенте настраиваются правила и сортировка.
+ *
+ * `references` и `headers` нужны письмам по сигналам: ссылка на общий корень
+ * цепочки и заголовок Thread-Topic помогают почтовым клиентам собрать все
+ * письма одного сигнала в одну переписку вдобавок к неизменной теме.
+ *
+ * @param {{to: string, subject: string, html: string, text: string, kind: string, entityId?: string,
+ *          references?: string, headers?: Record<string, string>}} message
  * @returns {Promise<{ok: boolean, id: string, deliveredBy: string, filePath?: string, error?: string}>}
  */
 export async function sendMail(message) {
@@ -83,6 +91,8 @@ export async function sendMail(message) {
       subject: message.subject,
       html: message.html,
       text: message.text,
+      ...(message.references ? { references: message.references, inReplyTo: message.references } : {}),
+      ...(message.headers ? { headers: message.headers } : {}),
     });
 
     if (!SMTP_CONFIGURED) {

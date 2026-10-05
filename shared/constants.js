@@ -86,45 +86,127 @@ export function accountType(role) {
 
 /* --------------------------------- Сигналы ---------------------------------- */
 
+/**
+ * Путь сигнала: входной контроль → работа у ответственного → закрытие.
+ *
+ *   • intake / rework — входной контроль: главный администратор проверяет,
+ *     хватает ли данных, и либо распределяет сигнал, либо возвращает его
+ *     подрядчику на доработку;
+ *   • yellow / red — сигнал в работе у ответственного (красный — просрочен);
+ *   • green / gray — закрыт (решен либо отклонен).
+ */
 export const STATUS = {
+  INTAKE: 'intake',
+  REWORK: 'rework',
   YELLOW: 'yellow',
   RED: 'red',
   GREEN: 'green',
   GRAY: 'gray',
 };
 
-export const STATUS_ORDER = [STATUS.YELLOW, STATUS.RED, STATUS.GREEN, STATUS.GRAY];
+export const STATUS_ORDER = [STATUS.INTAKE, STATUS.REWORK, STATUS.YELLOW, STATUS.RED, STATUS.GREEN, STATUS.GRAY];
 
+/**
+ * `paused` — часы сигнала стоят: мяч на стороне подрядчика или сигнал закрыт.
+ * Это время не идет ни в срок эскалации, ни во время решения.
+ */
 export const STATUS_META = {
+  [STATUS.INTAKE]: {
+    id: STATUS.INTAKE,
+    label: 'На входном контроле',
+    short: 'Входной контроль',
+    terminal: false,
+    paused: false,
+    hint: 'Главный администратор проверяет, достаточно ли данных, чтобы передать сигнал в работу.',
+  },
+  [STATUS.REWORK]: {
+    id: STATUS.REWORK,
+    label: 'На доработке у подрядчика',
+    short: 'У подрядчика',
+    terminal: false,
+    paused: true,
+    hint: 'Данных для работы недостаточно: подрядчик дополняет сигнал и отправляет его на повторную проверку.',
+  },
   [STATUS.YELLOW]: {
     id: STATUS.YELLOW,
-    label: 'Новая проблема',
+    label: 'В работе',
     short: 'Желтый',
     terminal: false,
-    hint: 'Сигнал создан и ожидает решения.',
+    paused: false,
+    hint: 'Сигнал прошел входной контроль и находится в работе у ответственного.',
   },
   [STATUS.RED]: {
     id: STATUS.RED,
     label: 'Критичная проблема',
     short: 'Красный',
     terminal: false,
-    hint: 'Проблема не решена более 48 часов — эскалирована системой.',
+    paused: false,
+    hint: 'Проблема в работе дольше 48 часов — эскалирована системой или вручную.',
   },
   [STATUS.GREEN]: {
     id: STATUS.GREEN,
     label: 'Проблема решена',
     short: 'Зеленый',
     terminal: true,
-    hint: 'Терминальный статус. Устанавливается автором или администратором.',
+    paused: true,
+    hint: 'Терминальный статус. Устанавливается автором или сотрудником.',
   },
   [STATUS.GRAY]: {
     id: STATUS.GRAY,
     label: 'Отклонен',
     short: 'Серый',
     terminal: true,
-    hint: 'Терминальный статус. Устанавливается только администратором.',
+    paused: true,
+    hint: 'Терминальный статус. Устанавливается только сотрудником.',
   },
 };
+
+/** Статусы входного контроля — сигнал еще не распределен. */
+export const INTAKE_STATUSES = [STATUS.INTAKE, STATUS.REWORK];
+
+/** Статусы работы у ответственного — то, что видно на карте сигналов как «активное». */
+export const WORK_STATUSES = [STATUS.YELLOW, STATUS.RED];
+
+/** Статусы, которые бывают у распределенного сигнала, — колонки и фильтры дашборда. */
+export const DASHBOARD_STATUSES = STATUS_ORDER.filter((status) => !INTAKE_STATUSES.includes(status));
+
+/* -------------------------------- Действия ----------------------------------- */
+
+/**
+ * Действия с сигналом. Один словарь на историю, права и письма: каждое
+ * действие — запись в ленте и письмо участникам с одной и той же темой.
+ */
+export const SIGNAL_ACTION = {
+  CREATE: 'create',
+  INTAKE_RETURN: 'intake-return',
+  UPDATE: 'update',
+  RESUBMIT: 'resubmit',
+  DISTRIBUTE: 'distribute',
+  ASSIGN: 'assign',
+  COMMENT: 'comment',
+  ESCALATE: 'escalate',
+  RESOLVE: 'resolve',
+  REJECT: 'reject',
+  REOPEN: 'reopen',
+};
+
+/** Подпись действия — заголовок письма и строка в ленте событий. */
+export const SIGNAL_ACTION_LABEL = {
+  [SIGNAL_ACTION.CREATE]: 'Сигнал создан',
+  [SIGNAL_ACTION.INTAKE_RETURN]: 'Возвращен подрядчику на доработку',
+  [SIGNAL_ACTION.UPDATE]: 'Сигнал дополнен',
+  [SIGNAL_ACTION.RESUBMIT]: 'Доработан и направлен на повторную проверку',
+  [SIGNAL_ACTION.DISTRIBUTE]: 'Прошел входной контроль и распределен',
+  [SIGNAL_ACTION.ASSIGN]: 'Назначен ответственный',
+  [SIGNAL_ACTION.COMMENT]: 'Комментарий',
+  [SIGNAL_ACTION.ESCALATE]: 'Сигнал стал критичным',
+  [SIGNAL_ACTION.RESOLVE]: 'Сигнал закрыт',
+  [SIGNAL_ACTION.REJECT]: 'Сигнал отклонен',
+  [SIGNAL_ACTION.REOPEN]: 'Сигнал возобновлен',
+};
+
+/** Предельная длина комментария, отчета и пояснения к возврату. */
+export const MAX_COMMENT_LENGTH = 4000;
 
 /* -------------------------------- Категории ---------------------------------- */
 
@@ -163,6 +245,36 @@ export function categoryShort(id) {
 }
 
 export const isDistributed = (signal) => Boolean(signal?.category);
+
+/** Сквозной номер сигнала для интерфейса и писем: «№125». */
+export function signalNumber(signal) {
+  return signal?.number ? `№${signal.number}` : '';
+}
+
+const TOPIC_LENGTH = 80;
+
+/**
+ * Тема сигнала — коротко о сути проблемы, из описания: первое предложение,
+ * если оно содержательное и короткое, иначе начало текста по границе слова.
+ *
+ * Вычисляется один раз при создании и дальше не меняется, даже когда
+ * описание правят: по неизменной теме почтовый клиент собирает все письма
+ * сигнала в одну цепочку.
+ */
+export function deriveSignalTopic(description) {
+  const text = String(description ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'Без описания';
+
+  const sentence = /^(.+?[.!?])(\s|$)/.exec(text)?.[1];
+  let topic = sentence && sentence.length >= 10 && sentence.length <= TOPIC_LENGTH ? sentence : text;
+
+  if (topic.length > TOPIC_LENGTH) {
+    const cut = topic.slice(0, TOPIC_LENGTH);
+    const space = cut.lastIndexOf(' ');
+    topic = `${(space > TOPIC_LENGTH / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.–—-]+$/, '')}…`;
+  }
+  return topic.replace(/\.$/, '');
+}
 
 /** Видит ли сотрудник сигнал этой категории. */
 export function canSeeCategory(user, category) {
@@ -217,6 +329,7 @@ export const HISTORY_KIND = {
   CATEGORY: 'category',
   NOTE: 'note',
   REOPEN: 'reopen',
+  COMMENT: 'comment',
 };
 
 export const HISTORY_KIND_LABEL = {
@@ -228,7 +341,22 @@ export const HISTORY_KIND_LABEL = {
   [HISTORY_KIND.CATEGORY]: 'Распределение',
   [HISTORY_KIND.NOTE]: 'Заметка',
   [HISTORY_KIND.REOPEN]: 'Возобновление',
+  [HISTORY_KIND.COMMENT]: 'Комментарий',
 };
+
+/**
+ * Записи ленты, которые видит автор-подрядчик: все, что касается движения
+ * его проблемы и переписки по ней. Внутренняя кухня — заметка кураторам,
+ * смена категории, снятие исполнителя — остается у сотрудников.
+ */
+export const PUBLIC_HISTORY_KINDS = [
+  HISTORY_KIND.CREATE,
+  HISTORY_KIND.STATUS,
+  HISTORY_KIND.REOPEN,
+  HISTORY_KIND.EDIT,
+  HISTORY_KIND.ASSIGN,
+  HISTORY_KIND.COMMENT,
+];
 
 /** Фильтр по принятию в работу. `all` — ничего не выбрано, показываются все. */
 export const ASSIGNMENT = {
@@ -254,60 +382,24 @@ export const EMAIL_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 /** Ссылка восстановления пароля живет меньше: она дает вход в учетную запись. */
 export const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
-/** События, по которым уходят письма. */
-export const NOTIFICATION_EVENT = {
-  CREATE: 'create',
-  ASSIGN: 'assign',
-  RED: 'red',
-  RESOLVE: 'resolve',
-  REOPEN: 'reopen',
-};
-
-export const NOTIFICATION_EVENT_LABEL = {
-  [NOTIFICATION_EVENT.CREATE]: 'Новый сигнал в системе',
-  [NOTIFICATION_EVENT.ASSIGN]: 'Сигнал назначен на вас',
-  [NOTIFICATION_EVENT.RED]: 'Сигнал стал критичным',
-  [NOTIFICATION_EVENT.RESOLVE]: 'Сигнал закрыт',
-  [NOTIFICATION_EVENT.REOPEN]: 'Сигнал возобновлен',
-};
-
-/** Подписки сотрудника: общий тумблер плюс выбор событий. */
-export const NOTIFICATION_EVENTS = [
-  { id: NOTIFICATION_EVENT.CREATE, label: 'Новый сигнал в системе' },
-  { id: NOTIFICATION_EVENT.ASSIGN, label: 'Сигнал назначен на вас' },
-  { id: NOTIFICATION_EVENT.RED, label: 'Сигнал стал критичным' },
-  { id: NOTIFICATION_EVENT.RESOLVE, label: 'Сигнал закрыт' },
-  { id: NOTIFICATION_EVENT.REOPEN, label: 'Сигнал возобновлен' },
-];
-
-export const NOTIFICATION_EVENT_IDS = NOTIFICATION_EVENTS.map((event) => event.id);
-
 /**
- * Настройки почтовых уведомлений.
+ * Настройки почтовых уведомлений — один общий тумблер.
  *
- * У сотрудника — общий тумблер и набор событий. У подрядчика выбора событий нет:
- * ему приходит письмо только при смене статуса его собственной проблемы,
- * поэтому в интерфейсе остается один тумблер.
- *
- * Подписка задает, ЧТО человек хочет получать, но не отменяет правило, КОМУ
- * событие вообще адресовано: руководителю письма приходят только по сигналам,
- * назначенным на него (см. staffRecipients в server/mail/notifier.js).
+ * Выбора отдельных событий больше нет: по сигналу приходит письмо о каждом
+ * действии, и все письма одного сигнала складываются в почте в одну цепочку.
+ * Выборочная подписка рвала бы эту цепочку посередине. КОМУ адресовано
+ * письмо, решает сервер (см. recipientsFor в server/mail/notifier.js).
  */
-export const DEFAULT_NOTIFY = Object.freeze({ enabled: true, events: [...NOTIFICATION_EVENT_IDS] });
+export const DEFAULT_NOTIFY = Object.freeze({ enabled: true });
 
 export function normalizeNotify(value) {
   const source = value && typeof value === 'object' ? value : {};
-  const events = Array.isArray(source.events)
-    ? [...new Set(source.events.filter((id) => NOTIFICATION_EVENT_IDS.includes(id)))]
-    : [...NOTIFICATION_EVENT_IDS];
-
-  return { enabled: source.enabled !== false, events };
+  return { enabled: source.enabled !== false };
 }
 
-/** Нужно ли слать письмо этому получателю по этому событию. */
-export function wantsNotification(notify, event) {
-  const prefs = normalizeNotify(notify);
-  return prefs.enabled && prefs.events.includes(event);
+/** Нужно ли слать письма этому получателю. */
+export function wantsNotification(notify) {
+  return normalizeNotify(notify).enabled;
 }
 
 /* ------------------------------- оформление ---------------------------------- */

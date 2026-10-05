@@ -97,4 +97,13 @@ export const SMTP = {
 
 export const SMTP_CONFIGURED = Boolean(SMTP.host);
 
+/**
+ * Копия всех писем по сигналам главному администратору.
+ *
+ * Включена на период тестирования новой схемы работы. После него ставится
+ * MAIL_COPY_SUPERADMIN=false — тогда главному администратору приходят только
+ * письма входного контроля, где действовать нужно ему самому.
+ */
+export const MAIL_COPY_SUPERADMIN = process.env.MAIL_COPY_SUPERADMIN !== 'false';
+
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;

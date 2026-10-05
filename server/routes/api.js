@@ -4,14 +4,14 @@ import { sendJson, readJsonBody, badRequest, forbidden, notFound, HttpError } fr
 import { createSession, destroySession, isAdmin, isContractor, isStaff, isSuperadmin } from '../identity.js';
 import { currentRevision } from '../events.js';
 import { deliveryMode } from '../mail/transport.js';
-import { SMTP_CONFIGURED, APP_URL } from '../config.js';
+import { SMTP_CONFIGURED, APP_URL, MAIL_COPY_SUPERADMIN } from '../config.js';
 
 import * as signalsService from '../domain/signals.js';
 import * as usersService from '../domain/users.js';
 
 import { guard, reset as resetLimit, LIMITS } from '../ratelimit.js';
 
-import { ESCALATION_MS, ROLE } from '../../shared/constants.js';
+import { ESCALATION_MS, ROLE, SIGNAL_ACTION } from '../../shared/constants.js';
 
 /** Гость получает только meta — этого достаточно, чтобы показать вход и регистрацию. */
 function requireActor(actor) {
@@ -63,6 +63,7 @@ function meta() {
     escalationMs: ESCALATION_MS,
     mailMode: deliveryMode,
     smtpConfigured: SMTP_CONFIGURED,
+    mailCopySuperadmin: MAIL_COPY_SUPERADMIN,
     appUrl: APP_URL,
   };
 }
@@ -86,14 +87,14 @@ export function getState(req, res, { actor }) {
   const payload = {
     actor: publicActor(actor),
     // «Мои сигналы» у подрядчика — то, что он подал; у сотрудника — то,
-    // за что он лично отвечает. Изоляция подрядчиков живет здесь:
-    // чужие сигналы просто не попадают в ответ.
+    // за что он лично отвечает, и то, что подал сам. Изоляция подрядчиков
+    // живет здесь: чужие сигналы просто не попадают в ответ.
     mySignals: isContractor(actor)
       ? signalsService.listByAuthor(actor.id).map(signalsService.forContractor)
-      : signalsService.listAssignedTo(actor.id),
+      : signalsService.listMine(actor.id),
     // Администратор и руководитель видят только разрешенные им категории.
     allSignals: staff ? signalsService.listForAdmin(actor) : null,
-    // Раздел «Распределение» существует только для главного администратора.
+    // Раздел «Входной контроль» существует только для главного администратора.
     undistributed: isSuperadmin(actor) ? signalsService.listUndistributed() : null,
     users: isSuperadmin(actor) ? usersService.listUsers() : null,
     // Кого можно назначить на сигнал — список нужен окну распределения.
@@ -106,7 +107,11 @@ export function getState(req, res, { actor }) {
   };
 
   if (staff) {
-    const visible = [...payload.allSignals, ...(payload.undistributed ?? [])];
+    const visible = [
+      ...new Map(
+        [...payload.allSignals, ...(payload.undistributed ?? []), ...payload.mySignals].map((signal) => [signal.id, signal]),
+      ).values(),
+    ];
     payload.authorLabels = Object.fromEntries(visible.map((signal) => [signal.id, signalsService.authorLabel(signal)]));
     // Индикатор «сколько изменений с прошлого захода» — по одному числу на карточку.
     payload.unread = signalsService.unreadFor(actor.id, visible.map((signal) => signal.id));
@@ -132,10 +137,35 @@ export async function createSignal(req, res, { actor }) {
   sendJson(res, 201, { signal: signalFor(actor, signal) });
 }
 
-export async function changeSignalStatus(req, res, { actor, params }) {
+/**
+ * Действия, которые выполняются этим маршрутом. Распределение, доработка
+ * подрядчиком и возобновление идут своими маршрутами: у них свои данные.
+ */
+const ROUTED_ACTIONS = new Set([
+  SIGNAL_ACTION.INTAKE_RETURN,
+  SIGNAL_ACTION.ESCALATE,
+  SIGNAL_ACTION.RESOLVE,
+  SIGNAL_ACTION.REJECT,
+]);
+
+/** Действие с сигналом: возврат на доработку, эскалация, закрытие, отклонение. */
+export async function signalAction(req, res, { actor, params }) {
   requireActor(actor);
   const body = await readJsonBody(req);
-  const signal = signalsService.changeStatus(params.id, body.status, actor);
+  if (!ROUTED_ACTIONS.has(body.action)) throw badRequest('Неизвестное действие');
+
+  const signal = signalsService.performAction(params.id, body.action, actor, {
+    comment: body.comment,
+    fileIds: body.fileIds,
+  });
+  sendJson(res, 200, { signal: signalFor(actor, signal) });
+}
+
+/** Комментарий в переписке по сигналу — автор и сотрудники. */
+export async function commentSignal(req, res, { actor, params }) {
+  requireActor(actor);
+  const body = await readJsonBody(req);
+  const signal = signalsService.addComment(params.id, actor, { text: body.text, fileIds: body.fileIds });
   sendJson(res, 200, { signal: signalFor(actor, signal) });
 }
 
@@ -159,7 +189,10 @@ export async function updateSignal(req, res, { actor, params }) {
   sendJson(res, 200, { signal: signalFor(actor, signalsService.updateSignal(params.id, body, actor)) });
 }
 
-/** Распределение сигнала по категории — раздел главного администратора. */
+/**
+ * Распределение сигнала по категории — раздел «Входной контроль» главного
+ * администратора. Для сигнала на проверке это передача в работу.
+ */
 export async function distributeSignal(req, res, { actor, params }) {
   requireSuperadmin(actor);
   const body = await readJsonBody(req);
