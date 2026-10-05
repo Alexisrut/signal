@@ -5,7 +5,16 @@
 
 import { html, formatDateTime } from '../../core/utils.js';
 import { STATUS, STATUS_META, SIGNAL_ACTION, ESCALATION_MS, CATEGORIES, categoryLabel } from '/shared/constants.js';
-import { can, canAssignOthers, canComment, canEdit, canReopen, isActive } from '/shared/state-machine.js';
+import {
+  can,
+  canAssignOthers,
+  canComment,
+  canEdit,
+  canReopen,
+  canReport,
+  isActive,
+  submitActionFor,
+} from '/shared/state-machine.js';
 import { currentActor, isSuperadmin } from '../../domain/session.js';
 import {
   findAny,
@@ -16,6 +25,7 @@ import {
   markSeen,
   unreadCount,
   lastAction,
+  reportFiles,
 } from '../../domain/signals.js';
 import {
   statusBadge,
@@ -28,15 +38,19 @@ import {
   attachmentsList,
   assigneeChip,
   assigneeRoster,
+  reportCard,
   resolutionTimer,
 } from '../components.js';
 import { openAssignDialog } from '../assign-dialog.js';
 import {
   commentOnSignal,
+  confirmResolution,
   escalateSignal,
   rejectSignal,
   reopen,
+  reportOnSignal,
   resolveSignal,
+  returnForRework,
   returnToContractor,
 } from '../signal-actions.js';
 import { showToast } from '../chrome.js';
@@ -109,7 +123,83 @@ function stageCallout(signal, actor) {
     </div>`;
   }
 
+  if (signal.status === STATUS.RETURNED) {
+    const returned = lastAction(signal, SIGNAL_ACTION.RETURN);
+    return html`<div class="callout callout--returned">
+      <span class="callout__title">Подрядчик вернул сигнал на доработку</span>
+      <span class="callout__text">
+        Проблема не устранена или информации недостаточно. Доработайте решение, дополните отчет и повторно
+        направьте результат на подтверждение.
+      </span>
+      ${[
+        returned
+          ? html`<span class="callout__meta">${formatDateTime(returned.at)} · ${returned.byName}</span>
+              <div class="callout__quote">${returned.note}</div>`
+          : '',
+      ]}
+    </div>`;
+  }
+
+  if (signal.status === STATUS.CONFIRM) {
+    // Сотрудник тоже бывает автором сигнала — тогда подтверждает он сам.
+    const confirms = can(SIGNAL_ACTION.CONFIRM, signal, actor).allowed;
+    return html`<div class="callout callout--confirm">
+      <span class="callout__title">Ожидает подтверждения подрядчика</span>
+      <span class="callout__text">
+        ${confirms
+          ? 'Ответственный направил вам результат. Проверьте отчет: если проблема устранена — подтвердите выполнение, если нет — верните сигнал на доработку с комментарием.'
+          : 'Результат направлен автору сигнала. Сигнал закроется, когда автор подтвердит выполнение, или вернется на доработку с его комментарием.'}
+      </span>
+      ${[
+        confirms
+          ? html`<div class="callout__actions">
+              <button class="btn btn--success" data-action="confirm">Подтвердить выполнение</button>
+              <button class="btn btn--secondary" data-action="return-work">Вернуть на доработку</button>
+            </div>`
+          : '',
+      ]}
+    </div>`;
+  }
+
   return '';
+}
+
+/**
+ * Отчет о выполнении: текущий текст и документы, плюс кнопки, пока сигнал
+ * в работе. Закрыть сигнал ответственный не может — только направить
+ * результат автору на подтверждение.
+ */
+function reportSection(signal, actor) {
+  const reports = canReport(signal, actor).allowed;
+  if (!signal.report && !reports) return '';
+
+  const submits = can(submitActionFor(signal), signal, actor).allowed;
+
+  return html`<div class="detail__section">
+    <h2>Отчет о выполнении</h2>
+    ${[
+      signal.report
+        ? reportCard(signal, reportFiles(signal), { titled: false })
+        : html`<p class="roster__empty">
+            Отчета пока нет. Опишите, что сделано и какое решение принято, — без отчета результат нельзя
+            направить подрядчику.
+          </p>`,
+    ]}
+    ${[
+      reports
+        ? html`<div class="detail__actions detail__actions--inline">
+            ${[
+              submits
+                ? html`<button class="btn btn--primary" data-action="submit">Направить на подтверждение</button>`
+                : '',
+            ]}
+            <button class="btn btn--secondary" data-action="report">
+              ${signal.report ? 'Дополнить отчет' : 'Заполнить отчет'}
+            </button>
+          </div>`
+        : '',
+    ]}
+  </div>`;
 }
 
 export const adminSignalView = {
@@ -139,6 +229,7 @@ export const adminSignalView = {
     const distributes = canAssignOthers(signal, actor).allowed;
     const distributed = Boolean(signal.category);
 
+    // Закрыть сигнал «решено» может только автор: сотрудник направляет результат на подтверждение.
     const canResolve = can(SIGNAL_ACTION.RESOLVE, signal, actor).allowed;
     // На входном контроле кнопка «Отклонить» живет в плашке проверки.
     const canReject = signal.status !== STATUS.INTAKE && can(SIGNAL_ACTION.REJECT, signal, actor).allowed;
@@ -270,17 +361,19 @@ export const adminSignalView = {
               : '',
           ]}
 
+          ${[reportSection(signal, actor)]}
+
           ${[
-            signal.status === STATUS.YELLOW
+            signal.status === STATUS.YELLOW || signal.status === STATUS.RETURNED
               ? html`<div class="detail__escalation">${[escalationHint(signal, now)]}</div>`
               : '',
           ]}
 
           <div class="detail__actions">${[actions]}</div>
           <p class="detail__hint">
-            Срок ${Math.round(ESCALATION_MS / 3600000)} часов отсчитывается с передачи сигнала в работу; входной
-            контроль и доработка у подрядчика в него не входят. Красный ставит фоновый процесс по истечении
-            срока — либо сотрудник вручную; в истории эти случаи различимы по автору события.
+            Срок ${Math.round(ESCALATION_MS / 3600000)} часов отсчитывается с передачи сигнала в работу, после
+            возврата подрядчиком — заново; входной контроль и проверка результата подрядчиком в него не
+            входят. Закрывает сигнал только автор, подтвердив выполнение.
           </p>
 
           <div class="detail__section">
@@ -376,6 +469,10 @@ export const adminSignalView = {
     bind('return', returnToContractor);
     bind('reject', rejectSignal);
     bind('resolve', resolveSignal);
+    bind('report', (signal, button) => reportOnSignal(signal, button));
+    bind('submit', (signal, button) => reportOnSignal(signal, button, { submit: true }));
+    bind('confirm', confirmResolution);
+    bind('return-work', returnForRework);
     bind('escalate', escalateSignal);
     bind('comment', commentOnSignal);
     bind('reopen', reopen);

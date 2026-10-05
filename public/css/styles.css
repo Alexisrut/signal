@@ -48,6 +48,14 @@
   --ink-intake: #a9c9ff;
   --ink-rework: #d3aaff;
 
+  /* Подтверждение: проверка подрядчиком — бирюзовый, возврат на доработку — оранжевый. */
+  --confirm: #38c6c0;
+  --returned: #ff9f43;
+  --tint-confirm: rgba(56, 198, 192, 0.14);
+  --tint-returned: rgba(255, 159, 67, 0.14);
+  --ink-confirm: #8fe6e1;
+  --ink-returned: #ffc488;
+
   --topbar-bg: rgba(13, 17, 23, 0.82);
   --column-bg: rgba(22, 29, 40, 0.6);
   --glow-1: rgba(79, 140, 255, 0.12);
@@ -93,6 +101,13 @@
   --tint-rework: rgba(123, 63, 191, 0.12);
   --ink-intake: #2457b8;
   --ink-rework: #6a33a8;
+
+  --confirm: #0d7a76;
+  --returned: #b85c00;
+  --tint-confirm: rgba(13, 122, 118, 0.12);
+  --tint-returned: rgba(184, 92, 0, 0.12);
+  --ink-confirm: #0a625f;
+  --ink-returned: #9a4d00;
 
   --topbar-bg: rgba(255, 255, 255, 0.88);
   --column-bg: rgba(220, 227, 238, 0.55);
@@ -3391,4 +3406,69 @@ body.is-modal-open {
   color: var(--muted);
   font-size: 14px;
   text-align: left;
+}
+
+/* ==========================================================================
+   Подтверждение закрытия подрядчиком, отчет о выполнении
+   ========================================================================== */
+
+.badge--confirm { background: var(--tint-confirm); border-color: var(--confirm); color: var(--ink-confirm); }
+.badge--returned { background: var(--tint-returned); border-color: var(--returned); color: var(--ink-returned); }
+.card--confirm, .row--confirm { border-left-color: var(--confirm); }
+.card--returned, .row--returned { border-left-color: var(--returned); }
+.detail--confirm { border-top-color: var(--confirm); }
+.detail--returned { border-top-color: var(--returned); }
+.history__item--confirm .history__marker { background: var(--confirm); }
+.history__item--returned .history__marker { background: var(--returned); }
+.chip--confirm.is-active { background: var(--tint-confirm); border-color: var(--confirm); color: var(--ink-confirm); }
+.chip--returned.is-active { background: var(--tint-returned); border-color: var(--returned); color: var(--ink-returned); }
+.chip--static.chip--confirm { color: var(--ink-confirm); }
+.chip--static.chip--returned { color: var(--ink-returned); }
+.stat--confirm { border-left: 3px solid var(--confirm); }
+.stat--returned { border-left: 3px solid var(--returned); }
+.legend__dot--confirm { background: var(--confirm); }
+.legend__dot--returned { background: var(--returned); }
+
+.callout--confirm { border-left-color: var(--confirm); background: var(--tint-confirm); }
+.callout--returned { border-left-color: var(--returned); background: var(--tint-returned); }
+
+.history__kind--report {
+  border-color: rgba(56, 198, 192, 0.45);
+  color: var(--ink-confirm);
+}
+
+.history__item--report .history__marker { background: var(--confirm); }
+
+/* Отчет о выполнении — главный документ для подрядчика, поэтому отдельной карточкой. */
+.report-card {
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--confirm);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-card__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.report-card__text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.report-card__meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.detail__actions--inline {
+  margin-top: 12px;
 }

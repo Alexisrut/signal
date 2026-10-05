@@ -24,6 +24,8 @@ import { openModal } from './modal.js';
  * @param {string} [options.initialText] текст, с которого начать
  * @param {string} [options.confirmLabel]
  * @param {'primary'|'danger'} [options.tone]
+ * @param {(text: string) => string|null} [options.validate] своя проверка текста (например, отчета)
+ * @param {number} [options.rows] высота поля
  * @returns {Promise<{comment: string, files: File[]}|null>} null — окно закрыли
  */
 export function openActionDialog({
@@ -36,6 +38,8 @@ export function openActionDialog({
   initialText = '',
   confirmLabel = 'Отправить',
   tone = 'primary',
+  validate = (text) => validateComment(text, { required }),
+  rows = 5,
 }) {
   let attachments = null;
 
@@ -43,7 +47,7 @@ export function openActionDialog({
     ${[lead ? html`<p class="modal__lead">${lead}</p>` : '']}
     <label class="field" data-field="comment">
       <span class="field__label">${label}${[required ? html`<span class="field__req">*</span>` : '']}</span>
-      <textarea class="field__control" name="comment" rows="5" placeholder="${placeholder}">${initialText}</textarea>
+      <textarea class="field__control" name="comment" rows="${rows}" placeholder="${placeholder}">${initialText}</textarea>
       <span class="field__error" data-role="comment-error"></span>
     </label>
     ${[withFiles ? fileField({ label: 'Файлы (необязательно)' }) : '']}
@@ -61,12 +65,16 @@ export function openActionDialog({
         root.querySelector('[data-field="comment"]').classList.remove('is-invalid');
         root.querySelector('[data-role="comment-error"]').textContent = '';
       });
-      // Поле ввода — главное в окне: курсор сразу в нем.
-      requestAnimationFrame(() => textarea.focus());
+      // Поле ввода — главное в окне: курсор сразу в нем, в конце текста —
+      // готовый текст (например, отчет) обычно дополняют, а не переписывают.
+      requestAnimationFrame(() => {
+        textarea.focus();
+        textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      });
     },
     collect: (root) => {
       const comment = root.querySelector('[name="comment"]').value.trim();
-      const error = validateComment(comment, { required });
+      const error = validate(comment);
       if (error) {
         root.querySelector('[data-field="comment"]').classList.add('is-invalid');
         root.querySelector('[data-role="comment-error"]').textContent = error;

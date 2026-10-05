@@ -144,11 +144,16 @@ export async function createSignal(req, res, { actor }) {
 const ROUTED_ACTIONS = new Set([
   SIGNAL_ACTION.INTAKE_RETURN,
   SIGNAL_ACTION.ESCALATE,
+  SIGNAL_ACTION.CONFIRM,
+  SIGNAL_ACTION.RETURN,
   SIGNAL_ACTION.RESOLVE,
   SIGNAL_ACTION.REJECT,
 ]);
 
-/** Действие с сигналом: возврат на доработку, эскалация, закрытие, отклонение. */
+/**
+ * Действие с сигналом: возврат на доработку, эскалация, подтверждение
+ * выполнения или возврат результата подрядчиком, закрытие, отклонение.
+ */
 export async function signalAction(req, res, { actor, params }) {
   requireActor(actor);
   const body = await readJsonBody(req);
@@ -159,6 +164,18 @@ export async function signalAction(req, res, { actor, params }) {
     fileIds: body.fileIds,
   });
   sendJson(res, 200, { signal: signalFor(actor, signal) });
+}
+
+/** Отчет о выполнении; `submit: true` — вместе с отправкой подрядчику на подтверждение. */
+export async function reportSignal(req, res, { actor, params }) {
+  requireStaff(actor);
+  const body = await readJsonBody(req);
+  const signal = signalsService.saveReport(params.id, actor, {
+    text: body.text,
+    fileIds: body.fileIds,
+    submit: body.submit === true,
+  });
+  sendJson(res, 200, { signal });
 }
 
 /** Комментарий в переписке по сигналу — автор и сотрудники. */

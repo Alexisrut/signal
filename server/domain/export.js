@@ -86,6 +86,7 @@ export async function buildSignalsWorkbook(filters, actor) {
     { header: 'Обновлен', key: 'updatedAt', width: 20, style: { numFmt: DATE_FORMAT } },
     { header: 'Время решения, ч', key: 'resolutionHours', width: 18 },
     { header: 'Вложений', key: 'attachments', width: 12 },
+    { header: 'Отчет о выполнении', key: 'report', width: 60 },
   ];
 
   // То же время решения, что показывает интерфейс: за вычетом пауз,
@@ -122,6 +123,7 @@ export async function buildSignalsWorkbook(filters, actor) {
       updatedAt: new Date(row.updated_at),
       resolutionHours: resolutionHours(row),
       attachments: counts.get(row.id) ?? 0,
+      report: row.report ? String(row.report) : '',
     });
   }
 

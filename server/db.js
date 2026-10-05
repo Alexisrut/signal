@@ -89,6 +89,10 @@ sql.exec(`
     closed_at       INTEGER,
     paused_ms       INTEGER NOT NULL DEFAULT 0,
     assignment_note TEXT,
+    /* Отчет ответственного о выполнении: что сделано и какое решение принято. */
+    report          TEXT,
+    report_at       INTEGER,
+    report_by       TEXT,
     created_at      INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   );
@@ -256,6 +260,11 @@ function migrate() {
       }
     });
   }
+
+  // Отчет о выполнении появился вместе с подтверждением закрытия подрядчиком.
+  addColumn('signals', 'report', 'TEXT');
+  addColumn('signals', 'report_at', 'INTEGER');
+  addColumn('signals', 'report_by', 'TEXT');
 
   // Момент входа в текущий статус: у закрытых — время закрытия, у остальных —
   // последняя смена статуса по ленте истории.

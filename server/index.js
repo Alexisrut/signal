@@ -38,6 +38,7 @@ const routes = [
   ['PUT', '/api/signals/:id', api.updateSignal],
   ['POST', '/api/signals/:id/action', api.signalAction],
   ['POST', '/api/signals/:id/comments', api.commentSignal],
+  ['PUT', '/api/signals/:id/report', api.reportSignal],
   ['POST', '/api/signals/:id/reopen', api.reopenSignal],
   ['POST', '/api/signals/:id/assign', api.assignSignal],
   ['POST', '/api/signals/:id/assignees', api.assignPeople],

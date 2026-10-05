@@ -108,9 +108,13 @@ await api(sa, 'POST', `/api/signals/${s4}/category`, { category: 'other', assign
 await api(sa, 'POST', `/api/signals/${s5}/category`, { category: 'design', assignees: [idOf('manager1')] });
 await api(sa, 'POST', `/api/signals/${s8}/category`, { category: 'supply', assignees: [idOf('manager2')], note: 'Проверить условия хранения на складе.' });
 
-// Действия
+// Действия: отчет ответственного и подтверждение подрядчиком
 await api(m2, 'POST', `/api/signals/${s2}/comments`, { text: 'Поставщик подтвердил отгрузку на четверг, номер заказа 4471.' });
-await api(sa, 'POST', `/api/signals/${s3}/action`, { action: 'resolve', comment: 'Акт подписан 12.09, оплата прошла.' });
+await api(m2, 'PUT', `/api/signals/${s2}/report`, { submit: true, text: 'Кровельные материалы поставлены 18.09, накладная №4471, получил прораб Николаев В.А. на складе №1.' });
+await api(adm, 'PUT', `/api/signals/${s3}/report`, { submit: true, text: 'Акт за август подписан 12.09 главным инженером, передан в бухгалтерию, оплата прошла 16.09 (п/п №823).' });
+await api(c2, 'POST', `/api/signals/${s3}/action`, { action: 'confirm', comment: 'Оплату получили, спасибо.' });
+await api(m1, 'PUT', `/api/signals/${s1}/report`, { submit: true, text: 'Чертежи вентиляции есть в проекте, раздел ОВ, листы 12–14 — ссылка в общей папке проекта.' });
+await api(c1, 'POST', `/api/signals/${s1}/action`, { action: 'return', comment: 'На листах 12–14 нет узлов прохода через перекрытие в помещении 305 — нужен отдельный чертеж.' });
 await api(sa, 'POST', `/api/signals/${s4}/action`, { action: 'reject', comment: 'Дублирует сигнал по щитовой, принятый ранее.' });
 await api(c1, 'POST', `/api/signals/${s5}/action`, { action: 'resolve', comment: 'Ключи передали, работы возобновлены.' });
 await api(adm, 'POST', `/api/signals/${s8}/action`, { action: 'escalate' });   // ручная эскалация

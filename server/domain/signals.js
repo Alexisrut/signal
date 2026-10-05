@@ -42,6 +42,7 @@ import {
   canAssign,
   canAssignOthers,
   canComment,
+  canReport,
   canCurate,
   canDistribute,
   canEdit,
@@ -54,9 +55,11 @@ import {
   isTerminal,
   reopenTargetStatus,
   requiresComment,
+  requiresReport,
   resolutionMs,
+  submitActionFor,
 } from '../../shared/state-machine.js';
-import { validateComment, validateSignalInput } from '../../shared/validation.js';
+import { validateComment, validateReport, validateSignalInput } from '../../shared/validation.js';
 
 /** Заметка к распределению: обрезаем и приводим к null, чтобы не хранить пустую строку. */
 const MAX_NOTE_LENGTH = 1000;
@@ -96,6 +99,9 @@ function toSignal(row, history = [], attachments = [], assignees = []) {
     statusAt: row.status_at ?? null,
     assignees,
     assignmentNote: row.assignment_note ?? null,
+    report: row.report ?? null,
+    reportAt: row.report_at ?? null,
+    reportBy: row.report_by ?? null,
     distributedAt: row.distributed_at ?? null,
     closedAt: row.closed_at ?? null,
     // Время, когда часы сигнала стояли: вычитается из времени решения.
@@ -651,6 +657,7 @@ export function assignPeople(signalId, userIds, actor, note = null) {
  */
 export function performAction(signalId, action, actor, { comment = null, fileIds = [] } = {}) {
   const before = load(signalId, actor);
+  if (requiresReport(action)) throw badRequest('Результат направляется на подтверждение вместе с отчетом');
 
   const verdict = can(action, before, actor);
   if (!verdict.allowed) throw forbidden(verdict.reason);
@@ -715,16 +722,82 @@ export function reopenSignal(signalId, actor, note = null) {
   return signal;
 }
 
-/** Системная эскалация Желтый → Красный (вызывается только фоновым процессом). */
+/**
+ * ОТЧЕТ О ВЫПОЛНЕНИИ. Ответственный описывает, что сделано и какое решение
+ * принято, прикладывает документы. С `submit: true` сигнал вместе с отчетом
+ * уходит автору на подтверждение; без него отчет просто сохраняется, и его
+ * можно дополнять до отправки.
+ *
+ * После возврата подрядчиком отчет нужно именно дополнить: повторно отправить
+ * тот же текст без новых файлов нельзя — подрядчик уже сказал, что этого мало.
+ */
+export function saveReport(signalId, actor, { text, fileIds = [], submit = false } = {}) {
+  const before = load(signalId, actor);
+
+  const action = submit ? submitActionFor(before) : SIGNAL_ACTION.REPORT;
+  const verdict = submit ? can(action, before, actor) : canReport(before, actor);
+  if (!verdict.allowed) throw forbidden(verdict.reason);
+
+  const report = String(text ?? '').trim();
+  const error = validateReport(report);
+  if (error) throw badRequest(error);
+
+  const files = fileIdsOf({ fileIds });
+  const unchanged = report === before.report && !files.length;
+  if (unchanged && action === SIGNAL_ACTION.RESUBMIT_WORK) {
+    throw badRequest('Дополните отчет: опишите, что доработано после возврата, или приложите документы');
+  }
+  if (unchanged && action === SIGNAL_ACTION.REPORT) return before;
+
+  const to = submit ? WORKFLOW[action].to : before.status;
+  const now = Date.now();
+  let eventId = null;
+
+  sql.transaction(() => {
+    sql.run(`UPDATE signals SET report = ?, report_at = ?, report_by = ?, updated_at = ? WHERE id = ?`, [
+      report,
+      now,
+      actor.displayName,
+      now,
+      signalId,
+    ]);
+    if (submit) applyStatus(signalId, before, to, now);
+
+    eventId = insertHistory(signalId, {
+      kind: submit ? HISTORY_KIND.STATUS : HISTORY_KIND.REPORT,
+      from: before.status,
+      to,
+      actor,
+      at: now,
+      note: report,
+      details: { action },
+      fileIds: files,
+    });
+  });
+
+  const signal = getById(signalId);
+  publish('signal', { id: signalId, status: signal.status, report: true });
+  notifySignal(action, signal, actor, { comment: report, files: filesOf(signal, eventId) });
+  return signal;
+}
+
+/** Системная эскалация в Красный (вызывается только фоновым процессом). */
 export function escalateToRed(signalId) {
+  const signal = getRaw(signalId);
   return performAction(signalId, SIGNAL_ACTION.ESCALATE, SYSTEM_ACTOR, {
-    comment: 'Автоэскалация: в работе дольше 48 часов',
+    comment:
+      signal?.status === STATUS.RETURNED
+        ? 'Автоэскалация: после возврата на доработку прошло 48 часов'
+        : 'Автоэскалация: в работе дольше 48 часов',
   });
 }
 
-/** Все Желтые сигналы, у которых истек порог — выборка для фонового процесса. */
+/** Сигналы, у которых истек срок отработки, — выборка для фонового процесса. */
 export function findDueForEscalation(now = Date.now()) {
-  const rows = sql.all(`SELECT * FROM signals WHERE status = ? ORDER BY created_at`, [STATUS.YELLOW]);
+  const rows = sql.all(`SELECT * FROM signals WHERE status IN (?, ?) ORDER BY created_at`, [
+    STATUS.YELLOW,
+    STATUS.RETURNED,
+  ]);
   return hydrate(rows).filter((signal) => isEscalationDue(signal, now));
 }
 

@@ -44,6 +44,8 @@ export const api = {
     request('POST', `/api/signals/${encodeURIComponent(id)}/action`, { action, comment, fileIds }),
   commentSignal: (id, text, fileIds) =>
     request('POST', `/api/signals/${encodeURIComponent(id)}/comments`, { text, fileIds }),
+  saveReport: (id, { text, fileIds, submit }) =>
+    request('PUT', `/api/signals/${encodeURIComponent(id)}/report`, { text, fileIds, submit }),
   reopenSignal: (id, note) => request('POST', `/api/signals/${encodeURIComponent(id)}/reopen`, { note }),
   assignSignal: (id, assign, userId) =>
     request('POST', `/api/signals/${encodeURIComponent(id)}/assign`, { assign, userId }),

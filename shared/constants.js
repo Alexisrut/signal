@@ -87,24 +87,38 @@ export function accountType(role) {
 /* --------------------------------- Сигналы ---------------------------------- */
 
 /**
- * Путь сигнала: входной контроль → работа у ответственного → закрытие.
+ * Путь сигнала: входной контроль → работа у ответственного → подтверждение
+ * подрядчиком → закрытие.
  *
  *   • intake / rework — входной контроль: главный администратор проверяет,
  *     хватает ли данных, и либо распределяет сигнал, либо возвращает его
  *     подрядчику на доработку;
- *   • yellow / red — сигнал в работе у ответственного (красный — просрочен);
- *   • green / gray — закрыт (решен либо отклонен).
+ *   • yellow / red / returned — сигнал в работе у ответственного (красный —
+ *     просрочен, returned — подрядчик не подтвердил результат);
+ *   • confirm — ответственный отчитался, подрядчик проверяет результат;
+ *   • green / gray — закрыт (подтвержден либо отклонен).
  */
 export const STATUS = {
   INTAKE: 'intake',
   REWORK: 'rework',
   YELLOW: 'yellow',
   RED: 'red',
+  RETURNED: 'returned',
+  CONFIRM: 'confirm',
   GREEN: 'green',
   GRAY: 'gray',
 };
 
-export const STATUS_ORDER = [STATUS.INTAKE, STATUS.REWORK, STATUS.YELLOW, STATUS.RED, STATUS.GREEN, STATUS.GRAY];
+export const STATUS_ORDER = [
+  STATUS.INTAKE,
+  STATUS.REWORK,
+  STATUS.YELLOW,
+  STATUS.RED,
+  STATUS.RETURNED,
+  STATUS.CONFIRM,
+  STATUS.GREEN,
+  STATUS.GRAY,
+];
 
 /**
  * `paused` — часы сигнала стоят: мяч на стороне подрядчика или сигнал закрыт.
@@ -141,15 +155,33 @@ export const STATUS_META = {
     short: 'Красный',
     terminal: false,
     paused: false,
-    hint: 'Проблема в работе дольше 48 часов — эскалирована системой или вручную.',
+    hint: 'Срок отработки 48 часов истек — сигнал эскалирован системой или вручную.',
+  },
+  [STATUS.RETURNED]: {
+    id: STATUS.RETURNED,
+    label: 'Возвращен на доработку',
+    short: 'Возвращен',
+    terminal: false,
+    paused: false,
+    hint: 'Подрядчик не подтвердил устранение проблемы: ответственный дорабатывает решение и отчет.',
+  },
+  [STATUS.CONFIRM]: {
+    id: STATUS.CONFIRM,
+    label: 'Ожидает подтверждения подрядчика',
+    short: 'На подтверждении',
+    terminal: false,
+    paused: true,
+    hint: 'Ответственный отчитался о работе — подрядчик проверяет, устранена ли проблема.',
   },
   [STATUS.GREEN]: {
     id: STATUS.GREEN,
-    label: 'Проблема решена',
+    label: 'Закрыт',
     short: 'Зеленый',
     terminal: true,
     paused: true,
-    hint: 'Терминальный статус. Устанавливается автором или сотрудником.',
+    // Подсказка верна и для сигналов, закрытых до перехода на подтверждение
+    // подрядчиком, — тогда их закрывал сотрудник, и это видно в ленте.
+    hint: 'Сигнал закрыт: проблема решена. Кто закрыл — видно в истории событий.',
   },
   [STATUS.GRAY]: {
     id: STATUS.GRAY,
@@ -157,15 +189,15 @@ export const STATUS_META = {
     short: 'Серый',
     terminal: true,
     paused: true,
-    hint: 'Терминальный статус. Устанавливается только сотрудником.',
+    hint: 'Сигнал отклонен и закрыт без решения. Кто и почему — видно в истории событий.',
   },
 };
 
 /** Статусы входного контроля — сигнал еще не распределен. */
 export const INTAKE_STATUSES = [STATUS.INTAKE, STATUS.REWORK];
 
-/** Статусы работы у ответственного — то, что видно на карте сигналов как «активное». */
-export const WORK_STATUSES = [STATUS.YELLOW, STATUS.RED];
+/** Статусы работы у ответственного: мяч на его стороне, идет срок. */
+export const WORK_STATUSES = [STATUS.YELLOW, STATUS.RED, STATUS.RETURNED];
 
 /** Статусы, которые бывают у распределенного сигнала, — колонки и фильтры дашборда. */
 export const DASHBOARD_STATUSES = STATUS_ORDER.filter((status) => !INTAKE_STATUSES.includes(status));
@@ -185,6 +217,11 @@ export const SIGNAL_ACTION = {
   ASSIGN: 'assign',
   COMMENT: 'comment',
   ESCALATE: 'escalate',
+  REPORT: 'report',
+  SUBMIT: 'submit',
+  RESUBMIT_WORK: 'resubmit-work',
+  CONFIRM: 'confirm',
+  RETURN: 'return',
   RESOLVE: 'resolve',
   REJECT: 'reject',
   REOPEN: 'reopen',
@@ -200,13 +237,21 @@ export const SIGNAL_ACTION_LABEL = {
   [SIGNAL_ACTION.ASSIGN]: 'Назначен ответственный',
   [SIGNAL_ACTION.COMMENT]: 'Комментарий',
   [SIGNAL_ACTION.ESCALATE]: 'Сигнал стал критичным',
-  [SIGNAL_ACTION.RESOLVE]: 'Сигнал закрыт',
+  [SIGNAL_ACTION.REPORT]: 'Добавлен отчет о выполнении',
+  [SIGNAL_ACTION.SUBMIT]: 'Направлен подрядчику на подтверждение',
+  [SIGNAL_ACTION.RESUBMIT_WORK]: 'Доработан и повторно направлен на подтверждение',
+  [SIGNAL_ACTION.CONFIRM]: 'Выполнение подтверждено — сигнал закрыт',
+  [SIGNAL_ACTION.RETURN]: 'Возвращен на доработку',
+  [SIGNAL_ACTION.RESOLVE]: 'Сигнал закрыт автором',
   [SIGNAL_ACTION.REJECT]: 'Сигнал отклонен',
   [SIGNAL_ACTION.REOPEN]: 'Сигнал возобновлен',
 };
 
 /** Предельная длина комментария, отчета и пояснения к возврату. */
 export const MAX_COMMENT_LENGTH = 4000;
+
+/** Отчет должен объяснять подрядчику, как решен вопрос, — одной фразы «сделано» мало. */
+export const MIN_REPORT_LENGTH = 20;
 
 /* -------------------------------- Категории ---------------------------------- */
 
@@ -330,6 +375,7 @@ export const HISTORY_KIND = {
   NOTE: 'note',
   REOPEN: 'reopen',
   COMMENT: 'comment',
+  REPORT: 'report',
 };
 
 export const HISTORY_KIND_LABEL = {
@@ -342,6 +388,7 @@ export const HISTORY_KIND_LABEL = {
   [HISTORY_KIND.NOTE]: 'Заметка',
   [HISTORY_KIND.REOPEN]: 'Возобновление',
   [HISTORY_KIND.COMMENT]: 'Комментарий',
+  [HISTORY_KIND.REPORT]: 'Отчет',
 };
 
 /**
@@ -356,6 +403,7 @@ export const PUBLIC_HISTORY_KINDS = [
   HISTORY_KIND.EDIT,
   HISTORY_KIND.ASSIGN,
   HISTORY_KIND.COMMENT,
+  HISTORY_KIND.REPORT,
 ];
 
 /** Фильтр по принятию в работу. `all` — ничего не выбрано, показываются все. */

@@ -77,11 +77,13 @@ export function resolutionTimer(signal, { now = Date.now(), size = 'md' } = {}) 
   const paused = (signal.pausedMs ?? 0) > 0;
   const label = done
     ? 'Время решения'
-    : waiting
-      ? 'Часы на паузе'
-      : signal.status === STATUS.INTAKE
-        ? 'С момента подачи'
-        : 'В работе уже';
+    : signal.status === STATUS.CONFIRM
+      ? 'Ждет подтверждения'
+      : waiting
+        ? 'Часы на паузе'
+        : signal.status === STATUS.INTAKE
+          ? 'С момента подачи'
+          : 'В работе уже';
 
   return html`<div class="timer timer--${size} ${done ? 'timer--done' : 'timer--running'}">
     <span class="timer__icon" aria-hidden="true">◷</span>
@@ -112,11 +114,11 @@ export function unreadBadge(count) {
 
 /** Таймер до автоэскалации либо отметка о её просрочке. */
 export function escalationHint(signal, now = Date.now()) {
-  const due = escalationDueAt(signal);
+  const due = escalationDueAt(signal, now);
   if (due === null) return '';
   const left = due - now;
   if (left <= 0) {
-    return html`<span class="escalation escalation--due">Порог 48 ч пройден — ожидает эскалации</span>`;
+    return html`<span class="escalation escalation--due">Срок 48 ч истек — ожидает эскалации</span>`;
   }
   return html`<span class="escalation">До эскалации: ${formatDuration(left)}</span>`;
 }
@@ -338,6 +340,23 @@ export function historyList(history, { badgeFor = statusBadge, statusMeta = STAT
 
   if (!items.length) return html`<p class="column__empty">История пуста.</p>`;
   return html`<ol class="history">${items}</ol>`;
+}
+
+/* ---------------------------- отчет о выполнении ----------------------------- */
+
+/**
+ * Отчет ответственного: что сделано и какое решение принято, плюс документы,
+ * приложенные к отчету за все время работы. Его читает подрядчик, решая,
+ * подтвердить выполнение или вернуть сигнал на доработку.
+ */
+export function reportCard(signal, files = [], { titled = true } = {}) {
+  if (!signal?.report) return '';
+  return html`<div class="report-card">
+    ${[titled ? html`<span class="report-card__label">Отчет о выполнении</span>` : '']}
+    <p class="report-card__text">${signal.report}</p>
+    <span class="report-card__meta">${signal.reportBy ?? ''} · ${formatDateTime(signal.reportAt)}</span>
+    ${[files.length ? attachmentsList(files, { compact: true }) : '']}
+  </div>`;
 }
 
 /* -------------------------------- исполнитель -------------------------------- */

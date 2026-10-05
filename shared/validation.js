@@ -4,7 +4,7 @@
  * одинаковыми правилами, без риска разойтись.
  */
 
-import { ACCOUNT_TYPE_IDS, EMAIL_REGEX, MAX_COMMENT_LENGTH } from './constants.js';
+import { ACCOUNT_TYPE_IDS, EMAIL_REGEX, MAX_COMMENT_LENGTH, MIN_REPORT_LENGTH } from './constants.js';
 
 export function isBlank(value) {
   return String(value ?? '').trim().length === 0;
@@ -19,6 +19,21 @@ export function validateComment(text, { required = true } = {}) {
   const value = String(text ?? '').trim();
   if (!value) return required ? 'Напишите комментарий' : null;
   if (value.length > MAX_COMMENT_LENGTH) return `Комментарий длиннее ${MAX_COMMENT_LENGTH} символов`;
+  return null;
+}
+
+/**
+ * Отчет о выполнении: по нему подрядчик решает, устранена ли проблема,
+ * поэтому пустой или односложный отчет не принимается.
+ * @returns {string|null} текст ошибки или null
+ */
+export function validateReport(text) {
+  const value = String(text ?? '').trim();
+  if (!value) return 'Опишите, что сделано и какое решение принято';
+  if (value.length < MIN_REPORT_LENGTH) {
+    return `Отчет слишком короткий: опишите, как решен вопрос (минимум ${MIN_REPORT_LENGTH} символов)`;
+  }
+  if (value.length > MAX_COMMENT_LENGTH) return `Отчет длиннее ${MAX_COMMENT_LENGTH} символов`;
   return null;
 }
 

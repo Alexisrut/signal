@@ -1,7 +1,7 @@
 /** Точка входа: краткое описание системы и переход в свой раздел. */
 
 import { html } from '../../core/utils.js';
-import { CATEGORIES } from '/shared/constants.js';
+import { CATEGORIES, STATUS } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 import { currentActor, isAuthenticated, isContractor, isStaff, isSuperadmin } from '../../domain/session.js';
 import { listMine, listAwaitingIntake } from '../../domain/signals.js';
@@ -13,6 +13,8 @@ export const homeView = {
     const actor = currentActor();
     const mine = listMine();
     const activeMine = mine.filter((signal) => isActive(signal.status)).length;
+    // Сигналы, по которым ход за подрядчиком: дополнить или проверить результат.
+    const awaitingMe = mine.filter((signal) => signal.status === STATUS.REWORK || signal.status === STATUS.CONFIRM).length;
 
     const categoryCards = CATEGORIES.map(
       (category) => html`<div class="status-card">
@@ -61,7 +63,10 @@ export const homeView = {
 
         ${[
           isContractor(actor) && activeMine
-            ? html`<div class="hero__meta"><span class="hero__pill">В работе: ${activeMine}</span></div>`
+            ? html`<div class="hero__meta">
+                <span class="hero__pill">В работе: ${activeMine}</span>
+                ${[awaitingMe ? html`<a class="hero__pill" href="#/my">Ждут вашего ответа: ${awaitingMe}</a>` : '']}
+              </div>`
             : '',
         ]}
       </section>

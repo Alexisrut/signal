@@ -14,7 +14,7 @@ import { html, formatDateTime, truncate } from '../../core/utils.js';
 import { STATUS, STATUS_META, STATUS_ORDER, SIGNAL_ACTION, categoryLabel } from '/shared/constants.js';
 import { can, canComment, canEdit, isInWork } from '/shared/state-machine.js';
 import { currentActor, isContractor } from '../../domain/session.js';
-import { listMine, findMine, countByStatus, unreadCount, lastAction } from '../../domain/signals.js';
+import { listMine, findMine, countByStatus, unreadCount, lastAction, reportFiles } from '../../domain/signals.js';
 import {
   statusBadge,
   numberTag,
@@ -26,10 +26,11 @@ import {
   attachmentsList,
   attachmentsBadge,
   assigneeChip,
+  reportCard,
   resolutionTimer,
   unreadBadge,
 } from '../components.js';
-import { commentOnSignal, resolveSignal } from '../signal-actions.js';
+import { commentOnSignal, confirmResolution, resolveSignal, returnForRework } from '../signal-actions.js';
 
 /**
  * Сводка подрядчика: сколько обращений он подал за все время и сколько
@@ -62,6 +63,12 @@ function bindActions(root, find) {
   });
   root.querySelectorAll('[data-comment]').forEach((button) => {
     button.addEventListener('click', () => commentOnSignal(find(button.dataset.comment), button));
+  });
+  root.querySelectorAll('[data-confirm]').forEach((button) => {
+    button.addEventListener('click', () => confirmResolution(find(button.dataset.confirm), button));
+  });
+  root.querySelectorAll('[data-return]').forEach((button) => {
+    button.addEventListener('click', () => returnForRework(find(button.dataset.return), button));
   });
 }
 
@@ -97,6 +104,42 @@ function stageCallout(signal, actor) {
           ? html`<div class="callout__actions">
               <a class="btn btn--primary" href="#/my/${signal.id}/edit">Доработать и отправить на проверку</a>
             </div>`
+          : '',
+      ]}
+    </div>`;
+  }
+
+  if (signal.status === STATUS.CONFIRM) {
+    const confirms = can(SIGNAL_ACTION.CONFIRM, signal, actor).allowed;
+    return html`<div class="callout callout--confirm">
+      <span class="callout__title">Проверьте результат</span>
+      <span class="callout__text">
+        Ответственный отработал сигнал и направил вам отчет. Если проблема устранена — подтвердите выполнение,
+        и сигнал закроется. Если нет или информации недостаточно — верните сигнал на доработку с комментарием.
+      </span>
+      ${[reportCard(signal, reportFiles(signal))]}
+      ${[
+        confirms
+          ? html`<div class="callout__actions">
+              <button class="btn btn--success" data-confirm="${signal.id}">Подтвердить выполнение</button>
+              <button class="btn btn--secondary" data-return="${signal.id}">Вернуть на доработку</button>
+            </div>`
+          : '',
+      ]}
+    </div>`;
+  }
+
+  if (signal.status === STATUS.RETURNED) {
+    const returned = lastAction(signal, SIGNAL_ACTION.RETURN);
+    return html`<div class="callout callout--returned">
+      <span class="callout__title">Сигнал возвращен ответственному на доработку</span>
+      <span class="callout__text">
+        Ответственный доработает решение и повторно направит вам результат на подтверждение.
+      </span>
+      ${[
+        returned
+          ? html`<span class="callout__meta">${formatDateTime(returned.at)} · ${returned.byName}</span>
+              <div class="callout__quote">${returned.note}</div>`
           : '',
       ]}
     </div>`;
@@ -149,6 +192,8 @@ export const mySignalsView = {
     const rows = signals.map((signal) => {
       const canResolve = mine && can(SIGNAL_ACTION.RESOLVE, signal, actor).allowed;
       const needsFix = mine && signal.status === STATUS.REWORK;
+      // Результат ждет проверки автора — это главное действие в строке.
+      const needsCheck = can(SIGNAL_ACTION.CONFIRM, signal, actor).allowed;
       // Подрядчик ведет карточку в своем разделе, сотрудник — в рабочей.
       const href = mine ? `#/my/${signal.id}` : `#/admin/signal/${signal.id}`;
 
@@ -172,6 +217,7 @@ export const mySignalsView = {
         </div>
         <div class="row__actions">
           ${[needsFix ? html`<a class="btn btn--primary btn--sm" href="#/my/${signal.id}/edit">Доработать</a>` : '']}
+          ${[needsCheck ? html`<a class="btn btn--primary btn--sm" href="${href}">Проверить результат</a>` : '']}
           <a class="btn btn--ghost btn--sm" href="${href}">Подробнее</a>
           ${[
             mine && !needsFix && canEdit(signal, actor).allowed
@@ -306,8 +352,18 @@ export const mySignalView = {
           ]}
 
           ${[
-            signal.status === STATUS.YELLOW
+            signal.status === STATUS.YELLOW || signal.status === STATUS.RETURNED
               ? html`<div class="detail__escalation">${[escalationHint(signal, now)]}</div>`
+              : '',
+          ]}
+
+          ${[
+            // На проверке отчет уже показан в плашке над описанием.
+            signal.report && signal.status !== STATUS.CONFIRM
+              ? html`<div class="detail__section">
+                  <h2>Отчет о выполнении</h2>
+                  ${[reportCard(signal, reportFiles(signal), { titled: false })]}
+                </div>`
               : '',
           ]}
 

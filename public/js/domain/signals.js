@@ -6,7 +6,7 @@
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
 import { upload } from './files.js';
-import { ASSIGNMENT, STATUS, STATUS_ORDER } from '/shared/constants.js';
+import { ASSIGNMENT, SIGNAL_ACTION, STATUS, STATUS_ORDER } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 
 export function listMine() {
@@ -38,6 +38,15 @@ export function listAwaitingIntake() {
  */
 export function lastAction(signal, action) {
   return [...(signal?.history ?? [])].reverse().find((entry) => entry.details?.action === action) ?? null;
+}
+
+const REPORT_ACTIONS = new Set([SIGNAL_ACTION.REPORT, SIGNAL_ACTION.SUBMIT, SIGNAL_ACTION.RESUBMIT_WORK]);
+
+/** Все файлы, приложенные к отчету за время работы, — документы, подтверждающие решение. */
+export function reportFiles(signal) {
+  return (signal?.history ?? [])
+    .filter((entry) => REPORT_ACTIONS.has(entry.details?.action))
+    .flatMap((entry) => entry.files ?? []);
 }
 
 export function findMine(id) {
@@ -107,6 +116,17 @@ export async function createSignal(input) {
 export async function performAction(id, action, { comment = '', files = [] } = {}) {
   const uploaded = await upload(files);
   const result = await api.signalAction(id, action, { comment, fileIds: uploaded.map((file) => file.id) });
+  await store.refresh();
+  return result.signal;
+}
+
+/**
+ * Отчет о выполнении. С `submit` сигнал вместе с отчетом уходит автору
+ * на подтверждение; без него отчет просто сохраняется.
+ */
+export async function saveReport(id, text, files = [], { submit = false } = {}) {
+  const uploaded = await upload(files);
+  const result = await api.saveReport(id, { text, fileIds: uploaded.map((file) => file.id), submit });
   await store.refresh();
   return result.signal;
 }

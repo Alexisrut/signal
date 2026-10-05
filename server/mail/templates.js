@@ -21,6 +21,8 @@ const STATUS_COLOR = {
   rework: '#8a5cd6',
   yellow: '#e0a800',
   red: '#d93a26',
+  returned: '#e07b1a',
+  confirm: '#119c95',
   green: '#1e9e52',
   gray: '#6b7785',
 };
@@ -159,12 +161,28 @@ function leadFor(action, { audience, actor }) {
       return 'По сигналу добавлен комментарий.';
     case SIGNAL_ACTION.ESCALATE:
       return actor?.role === ROLE.SYSTEM
-        ? 'Сигнал в работе дольше 48 часов — система перевела его в критичные.'
+        ? 'Срок отработки 48 часов истек — система перевела сигнал в критичные.'
         : 'Сигнал переведен в критичные.';
+    case SIGNAL_ACTION.REPORT:
+      return 'Ответственный добавил отчет о выполненных действиях.';
+    case SIGNAL_ACTION.SUBMIT:
+      return audience === 'contractor'
+        ? 'Ответственный отработал сигнал и направил вам результат. Проверьте по отчету ниже, устранена ли проблема, и в карточке сигнала подтвердите выполнение или верните сигнал на доработку с комментарием.'
+        : 'Ответственный отработал сигнал и направил результат подрядчику на подтверждение.';
+    case SIGNAL_ACTION.RESUBMIT_WORK:
+      return audience === 'contractor'
+        ? 'Ответственный доработал решение и повторно направил вам результат. Проверьте по отчету ниже, устранена ли проблема, и подтвердите выполнение или снова верните сигнал на доработку.'
+        : 'Ответственный доработал решение и повторно направил результат подрядчику на подтверждение.';
+    case SIGNAL_ACTION.CONFIRM:
+      return 'Подрядчик подтвердил, что проблема устранена. Сигнал закрыт.';
+    case SIGNAL_ACTION.RETURN:
+      return audience === 'contractor'
+        ? 'Сигнал возвращен ответственному на доработку с вашим комментарием.'
+        : 'Подрядчик не подтвердил устранение проблемы и вернул сигнал на доработку. Доработайте решение, дополните отчет и повторно направьте результат на подтверждение.';
     case SIGNAL_ACTION.RESOLVE:
-      return 'Сигнал закрыт: проблема решена.';
+      return 'Автор закрыл сигнал: проблема решена.';
     case SIGNAL_ACTION.REJECT:
-      return 'Сигнал отклонен.';
+      return 'Сигнал отклонен и закрыт без решения.';
     case SIGNAL_ACTION.REOPEN:
       return 'Сигнал возобновлен и возвращен в работу.';
     default:
@@ -172,11 +190,22 @@ function leadFor(action, { audience, actor }) {
   }
 }
 
-/** Подпись комментария: при возврате это перечень того, что дополнить. */
+/** Подпись комментария: при возврате это перечень того, что дополнить, при отправке — отчет. */
 function commentLabel(action) {
-  if (action === SIGNAL_ACTION.INTAKE_RETURN) return 'Что нужно дополнить';
-  if (action === SIGNAL_ACTION.REJECT) return 'Причина';
-  return 'Комментарий';
+  switch (action) {
+    case SIGNAL_ACTION.INTAKE_RETURN:
+      return 'Что нужно дополнить';
+    case SIGNAL_ACTION.RETURN:
+      return 'Что не устранено';
+    case SIGNAL_ACTION.REPORT:
+    case SIGNAL_ACTION.SUBMIT:
+    case SIGNAL_ACTION.RESUBMIT_WORK:
+      return 'Отчет о выполнении';
+    case SIGNAL_ACTION.REJECT:
+      return 'Причина';
+    default:
+      return 'Комментарий';
+  }
 }
 
 function actorName(actor) {

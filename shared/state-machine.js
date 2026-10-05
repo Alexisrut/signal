@@ -14,25 +14,42 @@
  *   ┌────────┐   48 ч в работе: СИСТЕМА или вручную   ┌────────┐
  *   │ ЖЕЛТЫЙ │ ─────────────────────────────────────► │КРАСНЫЙ │
  *   └────────┘                                        └────────┘
- *         │                                              │
+ *         │  отчет + «Направить на подтверждение»        │
  *         └──────────────────────┬───────────────────────┘
  *                                ▼
- *               ЗЕЛЕНЫЙ (решен) · СЕРЫЙ (отклонен)
+ *               ┌─────────────────────────────────┐
+ *               │ ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ ПОДРЯДЧИКА │
+ *               └─────────────────────────────────┘
+ *                  │ подтвердил             │ вернул с комментарием
+ *                  ▼                        ▼
+ *            ┌─────────┐          ┌────────────────────────┐   48 ч → КРАСНЫЙ
+ *            │ ЗАКРЫТ  │          │ ВОЗВРАЩЕН НА ДОРАБОТКУ │ ──────────────►
+ *            └─────────┘          └────────────────────────┘
+ *                                   │ дополнил отчет и повторно направил
+ *                                   └──────────► ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ
  *
  * Каждое действие описано декларативно в WORKFLOW: из каких статусов оно
  * доступно, в какой ведет, кто вправе его выполнить и обязателен ли
- * комментарий. Сервер применяет те же правила до записи в базу, интерфейс —
- * чтобы решить, какие кнопки показывать.
+ * комментарий или отчет. Сервер применяет те же правила до записи в базу,
+ * интерфейс — чтобы решить, какие кнопки показывать.
  *
  * ВХОДНОЙ КОНТРОЛЬ. Новый сигнал не уходит в работу сразу: главный
  * администратор проверяет, хватает ли в нем данных. Если нет — возвращает
  * подрядчику с комментарием, что дополнить. Подрядчик правит сигнал,
  * прикладывает документы и отправляет его на повторную проверку.
  *
- * ЧАСЫ СИГНАЛА. Время, пока мяч на стороне подрядчика (доработка) или сигнал
- * закрыт, копится в `pausedMs` и не идет во время решения. Порог эскалации
- * отсчитывается только по времени, проведенному в Желтом, — его считает
- * лента истории, поэтому возобновление продолжает отсчет, а не начинает заново.
+ * ПОДТВЕРЖДЕНИЕ. Ответственный не закрывает сигнал сам: он пишет отчет о том,
+ * что сделано и какое решение принято, и направляет результат подрядчику.
+ * Окончательно сигнал закрывает только сторона, обозначившая проблему, —
+ * автор. Если проблема не устранена, автор возвращает сигнал с обязательным
+ * комментарием, и цикл повторяется. Отклонить сигнал без решения может только
+ * главный администратор и только с указанием причины.
+ *
+ * ЧАСЫ СИГНАЛА. Время, пока мяч на стороне подрядчика (доработка, проверка
+ * результата) или сигнал закрыт, копится в `pausedMs` и не идет во время
+ * решения. Порог эскалации — 48 часов: для Желтого это суммарное время
+ * в Желтом (возобновление продолжает отсчет), для возвращенного на доработку —
+ * время с момента возврата.
  */
 
 import {
@@ -50,6 +67,10 @@ import {
 const OPEN_STATUSES = STATUS_ORDER.filter((status) => !STATUS_META[status].terminal);
 
 const isAuthor = (signal, actor) => Boolean(actor?.id) && actor.id === signal.authorId;
+
+/** Отчет и отправку на подтверждение выполняют сотрудники, которым виден сигнал. */
+const staffOnly = (signal, actor) =>
+  isStaffRole(actor?.role) || 'Отработать сигнал может ответственный сотрудник';
 
 /**
  * Декларативное описание действий, меняющих статус.
@@ -76,28 +97,53 @@ export const WORKFLOW = {
       isAuthor(signal, actor) || 'Отправить сигнал на повторную проверку может только его автор',
   },
   [SIGNAL_ACTION.ESCALATE]: {
-    from: [STATUS.YELLOW],
+    from: [STATUS.YELLOW, STATUS.RETURNED],
     to: STATUS.RED,
     allow: (signal, actor) =>
       actor?.role === ROLE.SYSTEM ||
       isStaffRole(actor?.role) ||
       'Перевести сигнал в Красный может система или сотрудник платформы',
   },
-  [SIGNAL_ACTION.RESOLVE]: {
-    from: OPEN_STATUSES,
+  [SIGNAL_ACTION.SUBMIT]: {
+    from: [STATUS.YELLOW, STATUS.RED],
+    to: STATUS.CONFIRM,
+    report: true,
+    allow: staffOnly,
+  },
+  [SIGNAL_ACTION.RESUBMIT_WORK]: {
+    from: [STATUS.RETURNED],
+    to: STATUS.CONFIRM,
+    report: true,
+    allow: staffOnly,
+  },
+  [SIGNAL_ACTION.CONFIRM]: {
+    from: [STATUS.CONFIRM],
     to: STATUS.GREEN,
+    allow: (signal, actor) =>
+      isAuthor(signal, actor) || 'Подтвердить выполнение может только автор сигнала',
+  },
+  [SIGNAL_ACTION.RETURN]: {
+    from: [STATUS.CONFIRM],
+    to: STATUS.RETURNED,
+    comment: true,
+    allow: (signal, actor) =>
+      isAuthor(signal, actor) || 'Вернуть сигнал на доработку может только его автор',
+  },
+  [SIGNAL_ACTION.RESOLVE]: {
     // Автор закрывает свою проблему на любом этапе — она могла решиться сама.
-    // Сотрудник — только сигнал в работе: на входном контроле решать еще нечего.
+    // Пока результат на проверке, для этого есть «Подтвердить выполнение».
+    from: OPEN_STATUSES.filter((status) => status !== STATUS.CONFIRM),
+    to: STATUS.GREEN,
     allow: (signal, actor) =>
       isAuthor(signal, actor) ||
-      (isStaffRole(actor?.role) && WORK_STATUSES.includes(signal.status)) ||
-      'Закрыть сигнал может только его автор или сотрудник, когда сигнал в работе',
+      'Закрыть сигнал может только его автор — ответственный направляет результат на подтверждение',
   },
   [SIGNAL_ACTION.REJECT]: {
     from: OPEN_STATUSES,
     to: STATUS.GRAY,
+    comment: true,
     allow: (signal, actor) =>
-      isStaffRole(actor?.role) || 'Отклонить сигнал может только администратор или руководитель',
+      isSuperadminRole(actor?.role) || 'Отклонить сигнал может только главный администратор',
   },
 };
 
@@ -123,6 +169,26 @@ export function can(action, signal, actor) {
 /** Обязателен ли комментарий к действию. */
 export function requiresComment(action) {
   return Boolean(WORKFLOW[action]?.comment);
+}
+
+/** Действие сдает работу подрядчику — к нему нужен отчет. */
+export function requiresReport(action) {
+  return Boolean(WORKFLOW[action]?.report);
+}
+
+/** Какое действие отправляет результат на подтверждение из текущего статуса. */
+export function submitActionFor(signal) {
+  return signal?.status === STATUS.RETURNED ? SIGNAL_ACTION.RESUBMIT_WORK : SIGNAL_ACTION.SUBMIT;
+}
+
+/** Сохранить или дополнить отчет можно, пока сигнал в работе у ответственного. */
+export function canReport(signal, actor) {
+  if (!signal) return { allowed: false, reason: 'Сигнал не найден' };
+  if (!WORK_STATUSES.includes(signal.status)) {
+    return { allowed: false, reason: 'Отчет заполняется, пока сигнал в работе' };
+  }
+  const verdict = staffOnly(signal, actor);
+  return verdict === true ? { allowed: true } : { allowed: false, reason: verdict };
 }
 
 /* ------------------------------- статусы и время ------------------------------- */
@@ -177,6 +243,14 @@ export function timeInStatus(signal, status, now = Date.now()) {
   return total;
 }
 
+/** Момент входа в текущий статус по ленте: начало последнего непрерывного отрезка. */
+function currentStatusSince(signal) {
+  const entries = chronology(signal);
+  let since = null;
+  for (let i = entries.length - 1; i >= 0 && entries[i].to === signal.status; i -= 1) since = entries[i].at;
+  return since ?? signal.statusAt ?? signal.createdAt;
+}
+
 /**
  * Время в статусе с последней передачи сигнала в работу.
  *
@@ -194,13 +268,17 @@ function workTimeInStatus(signal, status, now) {
 }
 
 /**
- * Момент, в который сигнал должен быть эскалирован; null — если он не Желтый.
- * Порог считается по времени в Желтом после передачи в работу: входной
- * контроль и закрытые периоды в срок не засчитываются.
+ * Момент, в который сигнал должен быть эскалирован; null — если эскалировать нечего.
+ *
+ * У Желтого порог считается по суммарному времени в Желтом после передачи
+ * в работу: входной контроль, проверка результата подрядчиком и закрытые
+ * периоды в срок не засчитываются. У возвращенного на доработку — 48 часов
+ * с момента возврата: на каждый круг доработки у ответственного свой срок.
  */
 export function escalationDueAt(signal, now = Date.now()) {
-  if (signal?.status !== STATUS.YELLOW) return null;
-  return now + ESCALATION_MS - workTimeInStatus(signal, STATUS.YELLOW, now);
+  if (signal?.status === STATUS.YELLOW) return now + ESCALATION_MS - workTimeInStatus(signal, STATUS.YELLOW, now);
+  if (signal?.status === STATUS.RETURNED) return currentStatusSince(signal) + ESCALATION_MS;
+  return null;
 }
 
 export function isEscalationDue(signal, now = Date.now()) {

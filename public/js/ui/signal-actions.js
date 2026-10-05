@@ -7,9 +7,10 @@
  * чтобы двойной щелчок не отправил действие дважды.
  */
 
-import { SIGNAL_ACTION, STATUS_META, signalNumber } from '/shared/constants.js';
-import { requiresComment } from '/shared/state-machine.js';
-import { performAction, addComment, reopenSignal } from '../domain/signals.js';
+import { SIGNAL_ACTION, STATUS, STATUS_META, signalNumber } from '/shared/constants.js';
+import { requiresComment, submitActionFor } from '/shared/state-machine.js';
+import { validateReport } from '/shared/validation.js';
+import { performAction, addComment, reopenSignal, saveReport } from '../domain/signals.js';
 import { openActionDialog } from './action-dialog.js';
 import { confirmDialog } from './modal.js';
 import { showToast } from './chrome.js';
@@ -64,11 +65,11 @@ export async function rejectSignal(signal, button) {
   return run(button, () => performAction(signal.id, SIGNAL_ACTION.REJECT, picked), 'Сигнал отклонен');
 }
 
-/** Закрытие с пометкой «решено» — автором или сотрудником, если правила позволяют. */
+/** Закрытие автором: проблема решилась — сигнал больше не нужен. */
 export async function resolveSignal(signal, button) {
   const picked = await openActionDialog({
     title: `Проблема решена${suffix(signal)}`,
-    lead: 'Сигнал будет закрыт. Участники получат письмо — коротко напишите, как решен вопрос.',
+    lead: 'Сигнал будет закрыт. Участники получат письмо — коротко напишите, как решился вопрос.',
     label: 'Как решен вопрос',
     required: requiresComment(SIGNAL_ACTION.RESOLVE),
     confirmLabel: 'Закрыть сигнал',
@@ -76,6 +77,80 @@ export async function resolveSignal(signal, button) {
   if (!picked) return null;
 
   return run(button, () => performAction(signal.id, SIGNAL_ACTION.RESOLVE, picked), 'Сигнал закрыт');
+}
+
+const REPORT_LEAD =
+  'Опишите, что сделано и какое решение принято, — так, чтобы подрядчик понял, как решен вопрос. ' +
+  'Например: где в проекте находится нужное решение (раздел, лист), дата поставки и документы об отгрузке, ' +
+  'кто получил материал. Приложите подтверждающие документы.';
+
+/**
+ * Отчет о выполнении. `submit` — вместе с отчетом сигнал уходит автору на
+ * подтверждение; иначе отчет только сохраняется. Поле начинается с текущего
+ * отчета: после возврата его дополняют, а не пишут заново.
+ */
+export async function reportOnSignal(signal, button, { submit = false } = {}) {
+  const repeat = submit && submitActionFor(signal) === SIGNAL_ACTION.RESUBMIT_WORK;
+  const picked = await openActionDialog({
+    title: submit ? `Направить на подтверждение${suffix(signal)}` : `Отчет о выполнении${suffix(signal)}`,
+    lead: repeat
+      ? `Подрядчик вернул сигнал на доработку. Дополните отчет: что доработано после возврата. ${REPORT_LEAD}`
+      : submit
+        ? `Сигнал уйдет автору: он подтвердит выполнение или вернет сигнал на доработку. ${REPORT_LEAD}`
+        : REPORT_LEAD,
+    label: 'Отчет о выполнении',
+    required: true,
+    initialText: signal?.report ?? '',
+    validate: validateReport,
+    rows: 8,
+    confirmLabel: submit ? 'Направить на подтверждение' : 'Сохранить отчет',
+  });
+  if (!picked) return null;
+
+  return run(
+    button,
+    () => saveReport(signal.id, picked.comment, picked.files, { submit }),
+    submit ? 'Результат направлен подрядчику на подтверждение' : 'Отчет сохранен',
+  );
+}
+
+/** Автор подтверждает, что проблема устранена, — сигнал закрывается. */
+export async function confirmResolution(signal, button) {
+  const picked = await openActionDialog({
+    title: `Подтвердить выполнение${suffix(signal)}`,
+    lead: 'Подтвердите, только если проблема действительно устранена: сигнал будет окончательно закрыт.',
+    label: 'Комментарий',
+    placeholder: 'Необязательно',
+    required: requiresComment(SIGNAL_ACTION.CONFIRM),
+    withFiles: false,
+    confirmLabel: 'Подтвердить и закрыть',
+  });
+  if (!picked) return null;
+
+  return run(
+    button,
+    () => performAction(signal.id, SIGNAL_ACTION.CONFIRM, picked),
+    'Выполнение подтверждено — сигнал закрыт',
+  );
+}
+
+/** Автор возвращает результат: проблема не устранена или информации недостаточно. */
+export async function returnForRework(signal, button) {
+  const picked = await openActionDialog({
+    title: `Вернуть на доработку${suffix(signal)}`,
+    lead: 'Сигнал вернется ответственному. Напишите, что не устранено или какой информации не хватает, — это обязательно.',
+    label: 'Что не устранено',
+    placeholder: 'Например: материал на объект не поступил, в накладной другая марка кабеля',
+    required: requiresComment(SIGNAL_ACTION.RETURN),
+    confirmLabel: 'Вернуть на доработку',
+  });
+  if (!picked) return null;
+
+  return run(
+    button,
+    () => performAction(signal.id, SIGNAL_ACTION.RETURN, picked),
+    'Сигнал возвращен ответственному на доработку',
+  );
 }
 
 /** Ручная эскалация — с подтверждением: она рассылает письма и меняет приоритет. */
@@ -108,6 +183,9 @@ export async function commentOnSignal(signal, button) {
 
   return run(button, () => addComment(signal.id, picked.comment, picked.files), 'Комментарий отправлен');
 }
+
+/** Статус, в котором автор проверяет результат. */
+export const awaitsConfirmation = (signal) => signal?.status === STATUS.CONFIRM;
 
 /** Возобновление закрытого сигнала — отсчет времени решения продолжится. */
 export async function reopen(signal, button) {
