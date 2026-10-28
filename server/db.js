@@ -66,6 +66,15 @@ sql.exec(`
      * человека потом сняли со всех задач.
      */
     has_own_signals   INTEGER NOT NULL DEFAULT 0,
+    /*
+     * Подтверждение подрядчика: pending — заявка ждет решения главного
+     * администратора, approved — допущен к работе, rejected — отклонен.
+     * Сотрудники и все, кто был в системе до появления проверки, — approved.
+     */
+    approval          TEXT NOT NULL DEFAULT 'approved',
+    approval_at       INTEGER,
+    approval_by       TEXT,
+    approval_note     TEXT,
     created_at        INTEGER NOT NULL,
     created_by        TEXT
   );
@@ -221,6 +230,14 @@ function migrate() {
   ]) {
     addColumn('users', column, definition);
   }
+
+  // Проверка новых подрядчиков. Колонка добавляется со значением approved:
+  // все, кто уже зарегистрирован, продолжают работать как раньше, на проверку
+  // попадают только заявки, поданные после обновления.
+  addColumn('users', 'approval', "TEXT NOT NULL DEFAULT 'approved'");
+  addColumn('users', 'approval_at', 'INTEGER');
+  addColumn('users', 'approval_by', 'TEXT');
+  addColumn('users', 'approval_note', 'TEXT');
 
   // Залипающий признак «свои сигналы были»: на старой базе выводим его
   // из уже существующих авторств и назначений.

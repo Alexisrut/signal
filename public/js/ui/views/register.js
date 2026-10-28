@@ -51,8 +51,9 @@ export const registerView = {
       <section class="auth auth--wide">
         <h1 class="auth__title">Регистрация подрядчика</h1>
         <p class="auth__lead">
-          После регистрации откроется личный кабинет: там создаются сигналы о проблемах на объекте
-          и видна история их рассмотрения.
+          После регистрации заявку проверит главный администратор. Когда он ее подтвердит, придет
+          письмо и откроется личный кабинет: там создаются сигналы о проблемах на объекте и видна
+          история их рассмотрения.
         </p>
 
         <form class="form" id="register-form" novalidate>
@@ -106,8 +107,8 @@ export const registerView = {
 
       try {
         const user = await register(values);
-        showToast(`Компания «${user.companyName}» зарегистрирована`, 'success');
-        navigate('/my');
+        showToast(`Заявка компании «${user.companyName}» отправлена на подтверждение`, 'success');
+        navigate('/');
       } catch (error) {
         button.disabled = false;
         button.textContent = 'Зарегистрироваться';

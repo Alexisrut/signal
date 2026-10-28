@@ -11,10 +11,11 @@
 import { html } from '../../core/utils.js';
 import { ASSIGNMENT, CATEGORIES, DASHBOARD_STATUSES, STATUS_META, categoryLabel } from '/shared/constants.js';
 import { isActive, isAssignedTo } from '/shared/state-machine.js';
-import { currentActor, isAdmin, isSuperadmin, myCategories } from '../../domain/session.js';
+import { currentActor, isAdmin, isSuperadmin, listPendingContractors, myCategories } from '../../domain/session.js';
 import {
   listAll,
   listAwaitingIntake,
+  inputControlCount,
   filterSignals,
   countByStatus,
   resolutionStats,
@@ -89,7 +90,9 @@ export const adminDashboardView = {
     const all = listAll() ?? [];
     const visible = filterSignals(all, { category, status });
     const counters = countByStatus(all);
-    const waiting = listAwaitingIntake().length;
+    const waiting = inputControlCount();
+    const waitingSignals = listAwaitingIntake().length;
+    const waitingContractors = listPendingContractors().length;
 
     /**
      * Индикатор новых изменений видят администраторы — по всем своим карточкам,
@@ -158,7 +161,15 @@ export const adminDashboardView = {
         ${[
           isSuperadmin(actor) && waiting
             ? html`<div class="banner banner--info">
-                Ожидают входного контроля: <b>${waiting}</b>.
+                Ожидают входного контроля:
+                ${[
+                  [
+                    waitingSignals ? html`сигналов — <b>${waitingSignals}</b>` : '',
+                    waitingContractors ? html`заявок подрядчиков — <b>${waitingContractors}</b>` : '',
+                  ]
+                    .filter(Boolean)
+                    .join(', '),
+                ]}.
                 <a class="link" href="#/admin/distribution">Открыть раздел</a>
               </div>`
             : '',

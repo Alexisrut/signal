@@ -5,7 +5,15 @@
 
 import * as store from './data/store.js';
 import { UI_TICK_MS } from '/shared/constants.js';
-import { currentActor, hasSignalsTab, isAuthenticated, isContractor, isStaff, isSuperadmin } from './domain/session.js';
+import {
+  currentActor,
+  hasSignalsTab,
+  isAuthenticated,
+  isAwaitingApproval,
+  isContractor,
+  isStaff,
+  isSuperadmin,
+} from './domain/session.js';
 import { applyTheme } from './core/theme.js';
 
 import { createRouter } from './ui/router.js';
@@ -26,9 +34,14 @@ import { accountView } from './ui/views/account.js';
 import { forgotView, resetView } from './ui/views/password.js';
 import { editSignalView } from './ui/views/edit-signal.js';
 
-/** Любой раздел, кроме входа и регистрации, требует учетной записи. */
+/**
+ * Любой раздел, кроме входа и регистрации, требует учетной записи — и
+ * подтвержденной: подрядчик с заявкой на проверке видит только главную,
+ * где ему показан экран ожидания.
+ */
 function requireAuth() {
-  return isAuthenticated() ? null : '/login';
+  if (!isAuthenticated()) return '/login';
+  return isAwaitingApproval() ? '/' : null;
 }
 
 /** Карточку в разделе «Мои сигналы» ведет только подрядчик. */
@@ -171,6 +184,8 @@ function accessKey() {
     actor?.role,
     actor?.isEmailVerified,
     actor?.hasOwnSignals,
+    // Подтверждение заявки открывает подрядчику систему — маршрут пересчитывается.
+    actor?.approval,
     (actor?.categories ?? []).join(','),
   ].join('|');
 }

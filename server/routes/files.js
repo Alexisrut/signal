@@ -6,6 +6,7 @@ import { sendJson, badRequest, notFound, unauthorized, contentDisposition } from
 import { ENTITY, getFileRow, listFileOwners, openFileStream, storeFile } from '../domain/files.js';
 import { getForActor, signalOfEvent } from '../domain/signals.js';
 import { guard, LIMITS } from '../ratelimit.js';
+import { requireApproved } from './api.js';
 import { MAX_FILE_SIZE } from '../../shared/constants.js';
 
 const MAX_FILES_PER_REQUEST = 10;
@@ -63,6 +64,8 @@ function parseMultipart(req) {
  */
 export async function uploadFiles(req, res, { actor }) {
   if (!actor) throw unauthorized();
+  // Подрядчик без подтвержденной заявки файлов не загружает: прикладывать их не к чему.
+  requireApproved(actor);
   guard(req, 'upload', LIMITS.UPLOAD);
 
   const parsed = await parseMultipart(req);

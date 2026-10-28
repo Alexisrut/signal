@@ -7,7 +7,16 @@
  */
 
 import { html, formatDateTime } from '../../core/utils.js';
-import { ACCOUNT_TYPES, CATEGORIES, ROLE, ROLE_LABEL, accountType, categoryShort, isCategoryScopedRole } from '/shared/constants.js';
+import {
+  ACCOUNT_TYPES,
+  APPROVAL,
+  CATEGORIES,
+  ROLE,
+  ROLE_LABEL,
+  accountType,
+  categoryShort,
+  isCategoryScopedRole,
+} from '/shared/constants.js';
 import { validateAdminInput } from '/shared/validation.js';
 import {
   currentActor,
@@ -107,7 +116,16 @@ export const adminUsersView = {
 
     const contractorRows = contractors.map(
       (user) => html`<tr data-search="${searchKey(user.companyName, user.login, user.fullName, user.email)}">
-        <td data-label="Компания"><strong>${user.companyName ?? user.login}</strong></td>
+        <td data-label="Компания">
+          <strong>${user.companyName ?? user.login}</strong>
+          ${[
+            user.approval === APPROVAL.PENDING
+              ? html`<div class="table__sub"><span class="pill pill--warn">ожидает подтверждения</span></div>`
+              : user.approval === APPROVAL.REJECTED
+                ? html`<div class="table__sub"><span class="pill pill--off">заявка отклонена</span></div>`
+                : '',
+          ]}
+        </td>
         <td data-label="ФИО">${user.fullName ?? '—'}</td>
         <td class="mono" data-label="Email">${user.email}</td>
         <td data-label="Зарегистрирован">${formatDateTime(user.createdAt)}</td>

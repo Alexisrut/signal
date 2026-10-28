@@ -136,6 +136,82 @@ export function passwordResetEmail({ user, url, ttlMinutes }) {
   return { subject: `Восстановление пароля · ${user.login}`, html, text };
 }
 
+/* ---------------------------- заявки подрядчиков ----------------------------- */
+
+const dateOnly = (ts) => escapeHtml(formatDateTime(ts));
+
+/** Главному администратору: новый подрядчик ждет подтверждения. */
+export function contractorApplicationEmail({ user, url }) {
+  const title = 'Новая заявка на регистрацию подрядчика';
+  const html = layout({
+    title,
+    accent: '#3b74e8',
+    bodyHtml: `
+      <p style="margin:0 0 14px;">Подрядчик зарегистрировался в системе. Пока заявка не подтверждена, он не может отправлять сигналы.</p>
+      ${factsTable([
+        ['Компания', `<b>${escapeHtml(user.companyName)}</b>`],
+        ['ФИО', escapeHtml(user.fullName)],
+        ['Email', escapeHtml(user.email)],
+        ['Зарегистрирован', dateOnly(user.createdAt)],
+      ])}`,
+    ctaLabel: 'Открыть входной контроль',
+    ctaUrl: url,
+    footerNote: 'Подтвердить или отклонить заявку можно в разделе «Входной контроль».',
+  });
+  const text = [
+    title,
+    '',
+    `Компания: ${user.companyName}`,
+    `ФИО: ${user.fullName}`,
+    `Email: ${user.email}`,
+    `Зарегистрирован: ${formatDateTime(user.createdAt)}`,
+    '',
+    `Входной контроль: ${url}`,
+  ].join('\n');
+  return { subject: `Заявка подрядчика · ${user.companyName}`, html, text };
+}
+
+/** Подрядчику: заявка подтверждена или отклонена. */
+export function contractorDecisionEmail({ user, url }) {
+  const approved = user.approval === 'approved';
+  const title = approved ? 'Регистрация подтверждена' : 'Заявка на регистрацию отклонена';
+  const lead = approved
+    ? 'Главный администратор подтвердил вашу учетную запись. Теперь вы можете отправлять сигналы о проблемах на объекте и пользоваться всеми разделами системы.'
+    : 'Главный администратор отклонил заявку на регистрацию. Если это ошибка, свяжитесь с ним.';
+  const reason = user.approvalNote
+    ? `<div style="margin:4px 0 16px;padding:12px 16px;border-left:4px solid ${approved ? '#1e9e52' : '#d93a26'};background:#f6f8fb;border-radius:6px;">
+         <div style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b99ab;margin-bottom:6px;">${approved ? 'Комментарий' : 'Причина'}</div>
+         <div style="font-size:15px;white-space:pre-wrap;">${escapeHtml(user.approvalNote)}</div>
+       </div>`
+    : '';
+  const html = layout({
+    title,
+    accent: approved ? '#1e9e52' : '#d93a26',
+    bodyHtml: `
+      <p style="margin:0 0 14px;">Здравствуйте, ${escapeHtml(user.fullName ?? user.displayName)}!</p>
+      <p style="margin:0 0 14px;">${escapeHtml(lead)}</p>
+      ${reason}
+      ${factsTable([
+        ['Компания', `<b>${escapeHtml(user.companyName)}</b>`],
+        ['Логин', escapeHtml(user.login)],
+      ])}`,
+    ctaLabel: approved ? 'Перейти в систему' : null,
+    ctaUrl: approved ? url : null,
+    footerNote: 'Письмо отправлено по заявке на регистрацию в системе мониторинга сигналов.',
+  });
+  const text = [
+    title,
+    '',
+    lead,
+    ...(user.approvalNote ? ['', `${approved ? 'Комментарий' : 'Причина'}: ${user.approvalNote}`] : []),
+    '',
+    `Компания: ${user.companyName}`,
+    `Логин: ${user.login}`,
+    ...(approved ? ['', `Вход в систему: ${url}`] : []),
+  ].join('\n');
+  return { subject: `Регистрация в системе мониторинга сигналов · ${user.companyName}`, html, text };
+}
+
 /* ------------------------------- уведомления --------------------------------- */
 
 /** Первая строка письма: что произошло. Подрядчику при возврате — что делать дальше. */

@@ -3472,3 +3472,21 @@ body.is-modal-open {
 .detail__actions--inline {
   margin-top: 12px;
 }
+
+/* ==========================================================================
+   Подтверждение новых подрядчиков
+   ========================================================================== */
+
+.callout--rejected { border-left-color: var(--red); background: var(--tint-red); }
+
+.approval-screen {
+  max-width: 640px;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.pill--off {
+  background: var(--tint-gray);
+  border-color: var(--gray);
+  color: var(--ink-gray);
+}

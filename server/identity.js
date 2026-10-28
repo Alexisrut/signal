@@ -9,7 +9,7 @@ import { sql } from './db.js';
 import { randomToken } from './crypto.js';
 import { parseCookies, appendCookie, clearCookie } from './http.js';
 import { SESSION_TTL_MS } from './config.js';
-import { ROLE, isAdminRole, isStaffRole, CATEGORY_IDS, normalizeNotify } from '../shared/constants.js';
+import { APPROVAL, ROLE, isAdminRole, isStaffRole, CATEGORY_IDS, normalizeNotify } from '../shared/constants.js';
 
 const SESSION_COOKIE = 'sms_session';
 
@@ -43,6 +43,11 @@ export function toUser(row) {
   if (row.role === ROLE.CONTRACTOR) {
     user.companyName = row.company_name;
     user.fullName = row.full_name;
+    // Заявка подрядчика: до подтверждения он видит только экран ожидания.
+    user.approval = row.approval ?? APPROVAL.APPROVED;
+    user.approvalAt = row.approval_at ?? null;
+    user.approvalBy = row.approval_by ?? null;
+    user.approvalNote = row.approval_note ?? null;
   }
 
   if (isStaffRole(row.role)) {

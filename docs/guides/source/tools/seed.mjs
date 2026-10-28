@@ -52,7 +52,10 @@ async function registerContractor(u) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'ru-RU' });
   const r = await ctx.request.post(`${BASE}/api/auth/register`, { data: { ...u, password2: u.password } });
   if (!r.ok()) throw new Error(`register ${u.companyName}: ${r.status()} ${await r.text()}`);
-  console.log('registered', u.companyName);
+  // Регистрация — это заявка: без подтверждения главным администратором сигналы не создать.
+  const { user } = await r.json();
+  await api(sa, 'POST', `/api/users/${user.id}/approval`, { decision: 'approve' });
+  console.log('registered and approved', u.companyName);
   return ctx;
 }
 

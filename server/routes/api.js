@@ -11,12 +11,27 @@ import * as usersService from '../domain/users.js';
 
 import { guard, reset as resetLimit, LIMITS } from '../ratelimit.js';
 
-import { ESCALATION_MS, ROLE, SIGNAL_ACTION } from '../../shared/constants.js';
+import { APPROVAL, ESCALATION_MS, ROLE, SIGNAL_ACTION, isApprovedUser } from '../../shared/constants.js';
 
 /** Гость получает только meta — этого достаточно, чтобы показать вход и регистрацию. */
 function requireActor(actor) {
   if (!actor) throw new HttpError(401, 'Требуется вход в систему');
   return actor;
+}
+
+/**
+ * Вошедший и допущенный к работе. Подрядчик с неподтвержденной заявкой входит
+ * в систему, но видит только экран ожидания — и сервер не дает ему ничего,
+ * кроме состояния сессии: ни сигналов, ни файлов, ни настроек.
+ */
+export function requireApproved(actor) {
+  requireActor(actor);
+  if (isApprovedUser(actor)) return actor;
+  throw forbidden(
+    actor.approval === APPROVAL.REJECTED
+      ? 'Заявка на регистрацию отклонена'
+      : 'Учетная запись ожидает подтверждения главным администратором',
+  );
 }
 
 function requireSuperadmin(actor) {
@@ -45,7 +60,16 @@ function publicActor(actor) {
     createdAt: actor.createdAt,
   };
 
-  if (isContractor(actor)) return { ...base, companyName: actor.companyName, fullName: actor.fullName };
+  if (isContractor(actor)) {
+    return {
+      ...base,
+      companyName: actor.companyName,
+      fullName: actor.fullName,
+      approval: actor.approval,
+      approvalAt: actor.approvalAt,
+      approvalNote: actor.approvalNote,
+    };
+  }
   return { ...base, categories: actor.categories };
 }
 
@@ -127,7 +151,7 @@ export function getState(req, res, { actor }) {
  * из сессии: тело запроса имя автора не передает и передать не может.
  */
 export async function createSignal(req, res, { actor }) {
-  requireActor(actor);
+  requireApproved(actor);
   if (!isContractor(actor) && !isStaff(actor)) throw forbidden('Создавать сигналы может участник системы');
 
   guard(req, 'signals', LIMITS.WRITE);
@@ -155,7 +179,7 @@ const ROUTED_ACTIONS = new Set([
  * выполнения или возврат результата подрядчиком, закрытие, отклонение.
  */
 export async function signalAction(req, res, { actor, params }) {
-  requireActor(actor);
+  requireApproved(actor);
   const body = await readJsonBody(req);
   if (!ROUTED_ACTIONS.has(body.action)) throw badRequest('Неизвестное действие');
 
@@ -180,7 +204,7 @@ export async function reportSignal(req, res, { actor, params }) {
 
 /** Комментарий в переписке по сигналу — автор и сотрудники. */
 export async function commentSignal(req, res, { actor, params }) {
-  requireActor(actor);
+  requireApproved(actor);
   const body = await readJsonBody(req);
   const signal = signalsService.addComment(params.id, actor, { text: body.text, fileIds: body.fileIds });
   sendJson(res, 200, { signal: signalFor(actor, signal) });
@@ -194,14 +218,14 @@ export async function reopenSignal(req, res, { actor, params }) {
 }
 
 export function getSignal(req, res, { actor, params }) {
-  requireActor(actor);
+  requireApproved(actor);
   const signal = signalsService.getForActor(params.id, actor);
   if (!signal) throw notFound('Сигнал не найден');
   sendJson(res, 200, { signal: signalFor(actor, signal) });
 }
 
 export async function updateSignal(req, res, { actor, params }) {
-  requireActor(actor);
+  requireApproved(actor);
   const body = await readJsonBody(req);
   sendJson(res, 200, { signal: signalFor(actor, signalsService.updateSignal(params.id, body, actor)) });
 }
@@ -335,6 +359,14 @@ export function deleteUser(req, res, { actor, params }) {
   sendJson(res, 200, { deleted: usersService.deleteUser(params.id, actor) });
 }
 
+/** Решение по заявке подрядчика: `{decision: 'approve'|'reject', note}`. */
+export async function decideContractor(req, res, { actor, params }) {
+  requireSuperadmin(actor);
+  const body = await readJsonBody(req);
+  const user = usersService.decideContractor(params.id, body.decision, actor, body.note);
+  sendJson(res, 200, { user: { id: user.id, approval: user.approval } });
+}
+
 /** Повышение администратора до главного и обратное понижение. */
 export async function updateUserRole(req, res, { actor, params }) {
   requireSuperadmin(actor);
@@ -346,7 +378,7 @@ export async function updateUserRole(req, res, { actor, params }) {
 /* ------------------------------ личный кабинет -------------------------------- */
 
 export async function changePassword(req, res, { actor }) {
-  requireActor(actor);
+  requireApproved(actor);
   guard(req, 'password', LIMITS.LOGIN);
   const body = await readJsonBody(req);
   usersService.changePassword(actor.id, body);
@@ -358,14 +390,14 @@ export async function changePassword(req, res, { actor }) {
 }
 
 export async function updateNotify(req, res, { actor }) {
-  requireActor(actor);
+  requireApproved(actor);
   const body = await readJsonBody(req);
   const user = usersService.updateNotify(actor.id, body.notify);
   sendJson(res, 200, { notify: user.notify });
 }
 
 export async function resendVerification(req, res, { actor }) {
-  requireActor(actor);
+  requireApproved(actor);
   guard(req, 'verify', LIMITS.MAIL);
   if (actor.isEmailVerified) throw badRequest('Почта уже подтверждена');
 

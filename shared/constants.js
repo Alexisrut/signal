@@ -37,6 +37,31 @@ export const isStaffRole = (role) => isAdminRole(role) || role === ROLE.MANAGER;
 export const isCategoryScopedRole = (role) => role === ROLE.ADMIN || role === ROLE.MANAGER;
 
 /**
+ * Подтверждение подрядчика. Самостоятельная регистрация дает только заявку:
+ * подавать сигналы и пользоваться системой подрядчик может после того, как
+ * главный администратор подтвердит ее во «Входном контроле».
+ *
+ * Сотрудников заводит главный администратор — они подтверждены сразу.
+ */
+export const APPROVAL = {
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+};
+
+export const APPROVAL_LABEL = {
+  [APPROVAL.PENDING]: 'Ожидает подтверждения',
+  [APPROVAL.APPROVED]: 'Подтвержден',
+  [APPROVAL.REJECTED]: 'Заявка отклонена',
+};
+
+/** Допущен ли пользователь к работе: сотрудник — всегда, подрядчик — после подтверждения. */
+export function isApprovedUser(user) {
+  if (!user?.role) return false;
+  return user.role !== ROLE.CONTRACTOR || user.approval === APPROVAL.APPROVED;
+}
+
+/**
  * Порядок должностей в списках. Списки сотрудников сортируются по нему,
  * а не по времени создания: должность — то, по чему человека ищут глазами.
  */

@@ -5,7 +5,7 @@
 
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
-import { ROLE, isAdminRole, isStaffRole, normalizeNotify } from '/shared/constants.js';
+import { APPROVAL, ROLE, isAdminRole, isApprovedUser, isStaffRole, normalizeNotify } from '/shared/constants.js';
 
 /** Гость: в системе не представлен, но интерфейсу нужен объект, а не null. */
 const GUEST = Object.freeze({ id: '', role: null, displayName: 'Гость', guest: true });
@@ -38,6 +38,20 @@ export function isStaff(actor = currentActor()) {
 
 export function isSuperadmin(actor = currentActor()) {
   return actor.role === ROLE.SUPERADMIN;
+}
+
+/**
+ * Допущен ли пользователь к работе. Подрядчик после самостоятельной регистрации
+ * ждет подтверждения главного администратора и до него видит только экран
+ * ожидания; сотрудники допущены всегда.
+ */
+export function isApproved(actor = currentActor()) {
+  return isApprovedUser(actor);
+}
+
+/** Подрядчик с заявкой, которая ждет решения или отклонена. */
+export function isAwaitingApproval(actor = currentActor()) {
+  return isContractor(actor) && !isApprovedUser(actor);
 }
 
 /** Подтверждение почты необязательное — оно ничего не блокирует. */
@@ -78,6 +92,16 @@ export function listUsers() {
   return store.getState().users ?? [];
 }
 
+/** Новые заявки подрядчиков — для «Входного контроля» главного администратора. */
+export function listPendingContractors() {
+  return listUsers().filter((user) => user.role === ROLE.CONTRACTOR && user.approval === APPROVAL.PENDING);
+}
+
+/** Отклоненные заявки — их можно подтвердить позже, если отклонили по ошибке. */
+export function listRejectedContractors() {
+  return listUsers().filter((user) => user.role === ROLE.CONTRACTOR && user.approval === APPROVAL.REJECTED);
+}
+
 /** Кого можно назначить исполнителем: руководители и администраторы. */
 export function listAssignables() {
   return store.getState().assignables ?? [];
@@ -116,6 +140,13 @@ export async function updateCategories(userId, categories) {
 
 export async function updateUserRole(userId, role) {
   const result = await api.updateUserRole(userId, role);
+  await store.refresh();
+  return result.user;
+}
+
+/** Подтвердить (`approve`) или отклонить (`reject`) заявку подрядчика. */
+export async function decideContractor(userId, decision, note = null) {
+  const result = await api.decideContractor(userId, decision, note);
   await store.refresh();
   return result.user;
 }

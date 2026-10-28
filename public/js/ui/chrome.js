@@ -5,8 +5,17 @@ import { ROLE, ROLE_LABEL, THEME, formatShortName } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 import { currentTheme, onThemeChange, toggleTheme } from '../core/theme.js';
 import * as store from '../data/store.js';
-import { currentActor, hasSignalsTab, isAdmin, isAuthenticated, isStaff, isSuperadmin, logout } from '../domain/session.js';
-import { listMine, listAll, listAwaitingIntake } from '../domain/signals.js';
+import {
+  currentActor,
+  hasSignalsTab,
+  isAdmin,
+  isAuthenticated,
+  isAwaitingApproval,
+  isStaff,
+  isSuperadmin,
+  logout,
+} from '../domain/session.js';
+import { listMine, listAll, inputControlCount } from '../domain/signals.js';
 import { navigate } from './router.js';
 
 let toastHost = null;
@@ -120,12 +129,13 @@ export function renderHeader(currentPath = '/') {
     // Входной контроль и учетные записи — исключительно зона главного администратора.
     // Счетчик — сигналы, которые ждут проверки прямо сейчас.
     if (isSuperadmin(actor)) {
-      links.push(navLink('#/admin/distribution', 'Входной контроль', currentPath, listAwaitingIntake().length || ''));
+      links.push(navLink('#/admin/distribution', 'Входной контроль', currentPath, inputControlCount() || ''));
       links.push(navLink('#/admin/users', 'Учетные записи', currentPath));
     }
   }
 
-  if (isAuthenticated(actor)) links.push(navLink('#/account', 'Аккаунт', currentPath));
+  // Подрядчику с заявкой на проверке разделы еще не открыты — остается главная.
+  if (isAuthenticated(actor) && !isAwaitingApproval(actor)) links.push(navLink('#/account', 'Аккаунт', currentPath));
 
   host.innerHTML = html`
     <div class="topbar__inner">

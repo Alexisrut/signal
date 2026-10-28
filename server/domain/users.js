@@ -16,10 +16,16 @@ import { uid, randomToken, randomSalt, hashPassword, verifyPassword } from '../c
 import { badRequest, forbidden, notFound } from '../http.js';
 import { publish } from '../events.js';
 import { toUser, findUser, findByLogin, findByEmail } from '../identity.js';
-import { sendVerificationEmail, sendPasswordResetEmail } from '../mail/notifier.js';
+import {
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  notifyContractorApplication,
+  notifyContractorDecision,
+} from '../mail/notifier.js';
 import { deliveryMode } from '../mail/transport.js';
 
 import {
+  APPROVAL,
   ROLE,
   ROLE_LABEL,
   ROLE_RANK,
@@ -36,6 +42,7 @@ import {
 import {
   validateAdminInput,
   validateContractorInput,
+  validateComment,
   validatePasswordChange,
   validatePasswordReset,
 } from '../../shared/validation.js';
@@ -85,10 +92,12 @@ export function registerContractor(input) {
   const id = uid('ctr');
   const fullName = String(input.fullName).trim();
 
+  // Самостоятельная регистрация — это заявка: работать подрядчик начнет,
+  // когда главный администратор подтвердит ее во «Входном контроле».
   sql.run(
     `INSERT INTO users (id, role, display_name, login, email, company_name, full_name,
-                        password_salt, password_hash, is_email_verified, notify, created_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'self')`,
+                        password_salt, password_hash, is_email_verified, notify, approval, created_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'self')`,
     [
       id,
       ROLE.CONTRACTOR,
@@ -100,12 +109,61 @@ export function registerContractor(input) {
       salt,
       hashPassword(input.password, salt),
       JSON.stringify(DEFAULT_NOTIFY),
+      APPROVAL.PENDING,
       Date.now(),
     ],
   );
 
   publish('user', { id });
-  return findUser(id);
+  const user = findUser(id);
+  notifyContractorApplication(user);
+  return user;
+}
+
+/**
+ * Решение по заявке подрядчика — только главный администратор.
+ *
+ * Подтвердить можно новую заявку и ранее отклоненную (если отклонили по
+ * ошибке), отклонить — только новую, и только с причиной: подрядчик увидит
+ * ее на экране и получит в письме.
+ *
+ * @param {'approve'|'reject'} decision
+ */
+export function decideContractor(userId, decision, actor, note = null) {
+  if (actor?.role !== ROLE.SUPERADMIN) {
+    throw forbidden('Подтверждать подрядчиков может только главный администратор');
+  }
+
+  const user = findUser(userId);
+  if (!user || user.role !== ROLE.CONTRACTOR) throw notFound('Заявка подрядчика не найдена');
+
+  let next;
+  if (decision === 'approve') {
+    if (user.approval === APPROVAL.APPROVED) throw badRequest('Подрядчик уже подтвержден');
+    next = APPROVAL.APPROVED;
+  } else if (decision === 'reject') {
+    if (user.approval !== APPROVAL.PENDING) throw badRequest('Отклонить можно только новую заявку');
+    next = APPROVAL.REJECTED;
+  } else {
+    throw badRequest('Неизвестное решение');
+  }
+
+  const error = validateComment(note, { required: next === APPROVAL.REJECTED });
+  if (error) throw badRequest(next === APPROVAL.REJECTED ? 'Укажите причину отклонения' : error);
+  const text = String(note ?? '').trim() || null;
+
+  sql.run(`UPDATE users SET approval = ?, approval_at = ?, approval_by = ?, approval_note = ? WHERE id = ?`, [
+    next,
+    Date.now(),
+    actor.displayName,
+    text,
+    userId,
+  ]);
+
+  publish('user', { id: userId, approval: next });
+  const updated = findUser(userId);
+  notifyContractorDecision(updated, actor);
+  return updated;
 }
 
 /* --------------------------- учетные записи сотрудников ----------------------- */
@@ -134,7 +192,14 @@ export function listUsers() {
       createdAt: user.createdAt,
       ...(isStaffRole(user.role)
         ? { categories: user.categories }
-        : { companyName: user.companyName, fullName: user.fullName }),
+        : {
+            companyName: user.companyName,
+            fullName: user.fullName,
+            approval: user.approval,
+            approvalAt: user.approvalAt,
+            approvalBy: user.approvalBy,
+            approvalNote: user.approvalNote,
+          }),
     }));
 }
 

@@ -21,7 +21,13 @@ import { sql } from '../db.js';
 import { APP_URL, MAIL_COPY_SUPERADMIN } from '../config.js';
 import { findUser, toUser } from '../identity.js';
 import { sendMail, deliveryMode } from './transport.js';
-import { verificationEmail, passwordResetEmail, signalNotificationEmail } from './templates.js';
+import {
+  verificationEmail,
+  passwordResetEmail,
+  signalNotificationEmail,
+  contractorApplicationEmail,
+  contractorDecisionEmail,
+} from './templates.js';
 
 import {
   ROLE,
@@ -70,6 +76,36 @@ export async function sendPasswordResetEmail(user, token) {
 
   const result = await sendMail({ ...message, to: user.email, kind: 'password-reset', entityId: user.id });
   return { mode: deliveryMode, ...result };
+}
+
+/* ---------------------------- заявки подрядчиков ----------------------------- */
+
+/**
+ * Новая заявка подрядчика — всем главным администраторам с включенными
+ * уведомлениями: решение по ней принимают они.
+ */
+export function notifyContractorApplication(user) {
+  const recipients = sql
+    .all(`SELECT * FROM users WHERE role = ?`, [ROLE.SUPERADMIN])
+    .map(toUser)
+    .filter((admin) => admin.email && wantsNotification(admin.notify));
+
+  const message = contractorApplicationEmail({ user, url: `${APP_URL}/#/admin/distribution` });
+  for (const admin of recipients) {
+    deliver(admin, { ...message, kind: 'contractor:application', entityId: user.id });
+  }
+  console.info(`[notifier] заявка подрядчика ${user.companyName} → ${recipients.length} получателей`);
+}
+
+/**
+ * Решение по заявке — самому подрядчику. Уходит независимо от тумблера
+ * уведомлений: без этого письма человек не узнает, что может работать.
+ */
+export function notifyContractorDecision(user) {
+  if (!user.email) return;
+  const message = contractorDecisionEmail({ user, url: `${APP_URL}/#/` });
+  deliver(user, { ...message, kind: `contractor:${user.approval}`, entityId: user.id });
+  console.info(`[notifier] решение по заявке ${user.companyName}: ${user.approval}`);
 }
 
 /* --------------------------------- сигналы ----------------------------------- */

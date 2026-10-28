@@ -1,16 +1,55 @@
 /** Точка входа: краткое описание системы и переход в свой раздел. */
 
-import { html } from '../../core/utils.js';
-import { CATEGORIES, STATUS } from '/shared/constants.js';
+import { html, formatDateTime } from '../../core/utils.js';
+import { APPROVAL, CATEGORIES, STATUS } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
-import { currentActor, isAuthenticated, isContractor, isStaff, isSuperadmin } from '../../domain/session.js';
-import { listMine, listAwaitingIntake } from '../../domain/signals.js';
+import {
+  currentActor,
+  isAuthenticated,
+  isAwaitingApproval,
+  isContractor,
+  isStaff,
+  isSuperadmin,
+} from '../../domain/session.js';
+import { listMine, inputControlCount } from '../../domain/signals.js';
+
+/**
+ * Экран подрядчика, чья заявка на регистрацию еще не подтверждена или
+ * отклонена. Других разделов у него нет: он ждет решения главного
+ * администратора, и экран сам сменится кабинетом, когда заявку подтвердят.
+ */
+function approvalScreen(actor) {
+  const rejected = actor.approval === APPROVAL.REJECTED;
+  return html`
+    <section class="hero">
+      <p class="hero__eyebrow">${actor.companyName ?? actor.displayName}</p>
+      <h1 class="hero__title">${rejected ? 'Заявка на регистрацию отклонена' : 'Заявка на регистрацию на проверке'}</h1>
+      <div class="callout ${rejected ? 'callout--rejected' : 'callout--intake'} approval-screen">
+        ${[
+          rejected
+            ? html`<span class="callout__text">
+                  Главный администратор отклонил заявку${actor.approvalAt ? ` ${formatDateTime(actor.approvalAt)}` : ''}.
+                  Если это ошибка, свяжитесь с ним.
+                </span>
+                ${[actor.approvalNote ? html`<div class="callout__quote">${actor.approvalNote}</div>` : '']}`
+            : html`<span class="callout__text">
+                Главный администратор проверит данные вашей компании. Как только заявка будет подтверждена,
+                придет письмо на ${actor.email}, а здесь откроется личный кабинет: отправка сигналов о
+                проблемах на объекте и история их рассмотрения.
+              </span>`,
+        ]}
+      </div>
+    </section>
+  `;
+}
 
 export const homeView = {
   live: true,
 
   render() {
     const actor = currentActor();
+    if (isAwaitingApproval(actor)) return approvalScreen(actor);
+
     const mine = listMine();
     const activeMine = mine.filter((signal) => isActive(signal.status)).length;
     // Сигналы, по которым ход за подрядчиком: дополнить или проверить результат.
@@ -36,7 +75,7 @@ export const homeView = {
         <a class="btn btn--secondary btn--lg" href="#/my">Мои сигналы${mine.length ? ` (${mine.length})` : ''}</a>
       `;
     } else if (isStaff(actor)) {
-      const waiting = listAwaitingIntake().length;
+      const waiting = inputControlCount();
       // Сотрудник тоже заводит проблемы, и кнопка нужна ему на видном месте:
       // администратор и руководитель сталкиваются с ними на объекте не реже.
       actions = html`

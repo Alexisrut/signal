@@ -6,6 +6,7 @@
 import * as store from '../data/store.js';
 import { api } from '../data/api.js';
 import { upload } from './files.js';
+import { listPendingContractors } from './session.js';
 import { ASSIGNMENT, SIGNAL_ACTION, STATUS, STATUS_ORDER } from '/shared/constants.js';
 import { isActive } from '/shared/state-machine.js';
 
@@ -30,6 +31,14 @@ export function listUndistributed() {
 /** Сигналы, ждущие проверки на входном контроле, — по ним действовать сейчас. */
 export function listAwaitingIntake() {
   return (listUndistributed() ?? []).filter((signal) => signal.status === STATUS.INTAKE);
+}
+
+/**
+ * Сколько всего ждет решения во «Входном контроле»: сигналы на проверке
+ * и новые заявки подрядчиков. Число для меню и кнопок главного администратора.
+ */
+export function inputControlCount() {
+  return listAwaitingIntake().length + listPendingContractors().length;
 }
 
 /**

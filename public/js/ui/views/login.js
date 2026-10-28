@@ -6,14 +6,15 @@
  */
 
 import { html, isBlank } from '../../core/utils.js';
-import { ROLE, isStaffRole } from '/shared/constants.js';
+import { ROLE, isApprovedUser, isStaffRole } from '/shared/constants.js';
 import { login } from '../../domain/session.js';
 import { navigate } from '../router.js';
 import { showToast } from '../chrome.js';
 
 /** Куда вести после успешного входа. */
 export function landingFor(user) {
-  if (user.role === ROLE.CONTRACTOR) return '/my';
+  // Подрядчик с неподтвержденной заявкой видит на главной экран ожидания.
+  if (user.role === ROLE.CONTRACTOR) return isApprovedUser(user) ? '/my' : '/';
   // Подтверждение почты доступ не ограничивает — сотрудник сразу попадает на дашборд.
   if (isStaffRole(user.role)) return '/admin';
   return '/';
