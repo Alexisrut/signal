@@ -13,6 +13,8 @@ import { sql } from '../db.js';
 import { ENTITY } from './files.js';
 
 import {
+  HISTORY_KIND,
+  STATUS,
   STATUS_META,
   categoryLabel,
 } from '../../shared/constants.js';
@@ -37,6 +39,21 @@ function assigneeSummary(entityType) {
     [entityType],
   );
   return new Map(rows.map((row) => [row.entity_id, { names: row.names, firstAt: row.first_at }]));
+}
+
+/**
+ * Комментарий автора к последнему закрытию сигнала («Подтвердить выполнение»
+ * или «Проблема решена»). Хранится только в истории; при повторных закрытиях
+ * более поздняя запись перезаписывает раннюю.
+ */
+function closingComments() {
+  const rows = sql.all(
+    `SELECT signal_id, note FROM signal_history
+      WHERE kind = ? AND status_to = ?
+      ORDER BY at, id`,
+    [HISTORY_KIND.STATUS, STATUS.GREEN],
+  );
+  return new Map(rows.map((row) => [row.signal_id, row.note]));
 }
 
 function authorNames() {
@@ -65,6 +82,7 @@ export async function buildSignalsWorkbook(filters, actor) {
   const counts = attachmentCounts(ENTITY.SIGNAL);
   const assignees = assigneeSummary(ENTITY.SIGNAL);
   const authors = authorNames();
+  const closings = closingComments();
 
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Система мониторинга сигналов';
@@ -87,6 +105,7 @@ export async function buildSignalsWorkbook(filters, actor) {
     { header: 'Время решения, ч', key: 'resolutionHours', width: 18 },
     { header: 'Вложений', key: 'attachments', width: 12 },
     { header: 'Отчет о выполнении', key: 'report', width: 60 },
+    { header: 'Комментарий выполнения', key: 'closingComment', width: 60 },
   ];
 
   // То же время решения, что показывает интерфейс: за вычетом пауз,
@@ -124,6 +143,8 @@ export async function buildSignalsWorkbook(filters, actor) {
       resolutionHours: resolutionHours(row),
       attachments: counts.get(row.id) ?? 0,
       report: row.report ? String(row.report) : '',
+      // У возобновленного сигнала комментарий прошлого закрытия уже не актуален.
+      closingComment: row.status === STATUS.GREEN ? String(closings.get(row.id) ?? '') : '',
     });
   }
 
