@@ -16,7 +16,8 @@ import {
   formatShortName,
   signalNumber,
 } from '/shared/constants.js';
-import { escalationDueAt, isActive, isPaused, isTerminal, resolutionMs } from '/shared/state-machine.js';
+import { escalationLeftMs, isActive, isOffHours, isPaused, isTerminal, resolutionMs } from '/shared/state-machine.js';
+import { pauseLabel, resumeLabel } from '/shared/work-calendar.js';
 import { validateFiles, acceptAttribute, limitsHint } from '../domain/files.js';
 
 export function statusBadge(status, { withHint = false } = {}) {
@@ -75,6 +76,8 @@ export function resolutionTimer(signal, { now = Date.now(), size = 'md' } = {}) 
   // Часы стоят и у незакрытого сигнала — пока он на доработке у подрядчика.
   const waiting = !done && isPaused(signal.status);
   const paused = (signal.pausedMs ?? 0) > 0;
+  // Выходные: счетчик идущего сигнала стоит до понедельника.
+  const weekend = !done && !waiting && isOffHours(now);
   const label = done
     ? 'Время решения'
     : signal.status === STATUS.CONFIRM
@@ -91,7 +94,13 @@ export function resolutionTimer(signal, { now = Date.now(), size = 'md' } = {}) 
       <span class="timer__label">${label}</span>
       <strong class="timer__value">${formatDuration(resolutionMs(signal, now))}</strong>
     </span>
-    ${[paused ? html`<span class="timer__paused" title="Пауза за время закрытия вычтена">с паузой</span>` : '']}
+    ${[
+      weekend
+        ? html`<span class="timer__paused timer__paused--weekend" title="Таймеры стоят ${pauseLabel()}">выходные — пауза</span>`
+        : paused
+          ? html`<span class="timer__paused" title="Пауза за время закрытия вычтена">с паузой</span>`
+          : '',
+    ]}
   </div>`;
 }
 
@@ -112,15 +121,20 @@ export function unreadBadge(count) {
   return html`<span class="unread" title="${label}" aria-label="${label}">${count > 99 ? '99+' : count}</span>`;
 }
 
-/** Таймер до автоэскалации либо отметка о её просрочке. */
+/**
+ * Таймер до автоэскалации либо отметка о её просрочке. Остаток — в рабочем
+ * времени: в выходные он не уменьшается, о чем и говорит приписка.
+ */
 export function escalationHint(signal, now = Date.now()) {
-  const due = escalationDueAt(signal, now);
-  if (due === null) return '';
-  const left = due - now;
+  const left = escalationLeftMs(signal, now);
+  if (left === null) return '';
   if (left <= 0) {
     return html`<span class="escalation escalation--due">Срок 48 ч истек — ожидает эскалации</span>`;
   }
-  return html`<span class="escalation">До эскалации: ${formatDuration(left)}</span>`;
+  const weekend = isOffHours(now)
+    ? html` <span class="escalation__pause" title="Таймеры стоят ${pauseLabel()}">· выходные, таймер стоит до ${resumeLabel()}</span>`
+    : '';
+  return html`<span class="escalation">До эскалации: ${formatDuration(left)}${[weekend]}</span>`;
 }
 
 /* --------------------------------- вложения ---------------------------------- */

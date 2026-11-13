@@ -12,6 +12,8 @@ import sqlite from 'node-sqlite3-wasm';
 import { DATA_DIR, UPLOADS_DIR, MAILBOX_DIR, DB_PATH } from './config.js';
 import { DEFAULT_ADMIN, DEFAULT_NOTIFY, ROLE, STATUS, SYSTEM_ACTOR, deriveSignalTopic } from '../shared/constants.js';
 import { hashPassword, randomSalt, uid } from './crypto.js';
+import { isPaused } from '../shared/state-machine.js';
+import { workingMs } from '../shared/work-calendar.js';
 
 const { Database } = sqlite;
 
@@ -97,6 +99,7 @@ sql.exec(`
     distributed_at  INTEGER,
     closed_at       INTEGER,
     paused_ms       INTEGER NOT NULL DEFAULT 0,
+    paused_work_ms  INTEGER NOT NULL DEFAULT 0,
     assignment_note TEXT,
     /* Отчет ответственного о выполнении: что сделано и какое решение принято. */
     report          TEXT,
@@ -261,6 +264,13 @@ function migrate() {
   }
   addColumn('signals', 'paused_ms', 'INTEGER NOT NULL DEFAULT 0');
 
+  // Таймеры без выходных: паузу существующих сигналов пересчитываем в рабочее
+  // время по ленте истории. Пересчет нужен один раз — при появлении колонки.
+  if (addColumn('signals', 'paused_work_ms', 'INTEGER NOT NULL DEFAULT 0')) {
+    const count = recountWorkingPauses();
+    console.info(`[db] миграция: пауза пересчитана без выходных у сигналов — ${count}`);
+  }
+
   // Сквозная нумерация: существующим сигналам номера раздаются по порядку создания.
   if (addColumn('signals', 'number', 'INTEGER')) {
     sql.transaction(() => {
@@ -357,6 +367,27 @@ function migrate() {
       console.info(`[db] миграция: «${promoted.login}» стал главным администратором`);
     }
   }
+}
+
+/**
+ * Пауза сигнала в рабочем времени — по ленте истории: сумма завершенных
+ * отрезков в статусах со стоящими часами. Текущий отрезок не входит: его
+ * добавит applyStatus при выходе из статуса, как и раньше.
+ */
+function recountWorkingPauses() {
+  const rows = sql.all(
+    `SELECT signal_id, at, status_to FROM signal_history WHERE status_to IS NOT NULL ORDER BY signal_id, at, id`,
+  );
+  const totals = new Map();
+  rows.forEach((row, index) => {
+    const next = rows[index + 1];
+    if (!next || next.signal_id !== row.signal_id || !isPaused(row.status_to)) return;
+    totals.set(row.signal_id, (totals.get(row.signal_id) ?? 0) + workingMs(row.at, next.at));
+  });
+  sql.transaction(() => {
+    for (const [id, ms] of totals) sql.run(`UPDATE signals SET paused_work_ms = ? WHERE id = ?`, [ms, id]);
+  });
+  return totals.size;
 }
 
 migrate();

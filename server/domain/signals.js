@@ -59,6 +59,7 @@ import {
   resolutionMs,
   submitActionFor,
 } from '../../shared/state-machine.js';
+import { workingMs } from '../../shared/work-calendar.js';
 import { validateComment, validateReport, validateSignalInput } from '../../shared/validation.js';
 
 /** Заметка к распределению: обрезаем и приводим к null, чтобы не хранить пустую строку. */
@@ -104,8 +105,9 @@ function toSignal(row, history = [], attachments = [], assignees = []) {
     reportBy: row.report_by ?? null,
     distributedAt: row.distributed_at ?? null,
     closedAt: row.closed_at ?? null,
-    // Время, когда часы сигнала стояли: вычитается из времени решения.
-    pausedMs: row.paused_ms ?? 0,
+    // Рабочее время (без выходных), когда часы сигнала стояли: вычитается
+    // из времени решения. paused_ms — то же в календарном времени, для отката.
+    pausedMs: row.paused_work_ms ?? row.paused_ms ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     history,
@@ -175,14 +177,22 @@ function insertHistory(signalId, { kind, from, to, actor, at = Date.now(), note 
  * Смена статуса в строке сигнала. Единственное место, где ведется учет пауз:
  * если сигнал выходит из статуса со стоящими часами (доработка у подрядчика,
  * закрытие), проведенное в нем время добавляется к паузе.
+ *
+ * Пауза копится дважды: в рабочем времени (paused_work_ms — по нему считается
+ * время решения, выходные уже не в счет) и в календарном (paused_ms — его
+ * читает предыдущая версия, чтобы откат выкатки не ломал счетчики).
  */
 function applyStatus(signalId, before, to, now) {
-  const pause = isPaused(before.status) ? Math.max(0, now - (before.statusAt ?? before.closedAt ?? now)) : 0;
+  const since = before.statusAt ?? before.closedAt ?? now;
+  const paused = isPaused(before.status);
+  const pause = paused ? Math.max(0, now - since) : 0;
+  const pauseWork = paused ? workingMs(since, now) : 0;
   sql.run(
-    `UPDATE signals SET status = ?, status_at = ?, paused_ms = paused_ms + ?, closed_at = ?, updated_at = ? WHERE id = ?`,
+    `UPDATE signals SET status = ?, status_at = ?, paused_ms = paused_ms + ?, paused_work_ms = paused_work_ms + ?,
+            closed_at = ?, updated_at = ? WHERE id = ?`,
     // Момент закрытия фиксируется явно: время решения нельзя выводить
     // из updated_at, потому что закрытую карточку еще правят и комментируют.
-    [to, now, pause, isTerminal(to) ? now : null, now, signalId],
+    [to, now, pause, pauseWork, isTerminal(to) ? now : null, now, signalId],
   );
 }
 
@@ -700,7 +710,7 @@ export function reopenSignal(signalId, actor, note = null) {
 
   const to = reopenTargetStatus(before);
   const now = Date.now();
-  const pause = Math.max(0, now - (before.statusAt ?? before.closedAt ?? now));
+  const pause = workingMs(before.statusAt ?? before.closedAt ?? now, now);
   const text = cleanComment(note);
 
   sql.transaction(() => {
@@ -787,8 +797,8 @@ export function escalateToRed(signalId) {
   return performAction(signalId, SIGNAL_ACTION.ESCALATE, SYSTEM_ACTOR, {
     comment:
       signal?.status === STATUS.RETURNED
-        ? 'Автоэскалация: после возврата на доработку прошло 48 часов'
-        : 'Автоэскалация: в работе дольше 48 часов',
+        ? 'Автоэскалация: после возврата на доработку прошло 48 часов (без учета выходных)'
+        : 'Автоэскалация: в работе дольше 48 часов (без учета выходных)',
   });
 }
 

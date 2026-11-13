@@ -23,6 +23,7 @@ import { verifyEmail } from './routes/verify.js';
 import { mailboxIndex, mailboxItem } from './routes/mailbox.js';
 
 import { DEFAULT_ADMIN, ESCALATION_MS } from '../shared/constants.js';
+import { pauseLabel } from '../shared/work-calendar.js';
 
 /** Таблица маршрутов: метод, шаблон пути с `:param`, обработчик. */
 const routes = [
@@ -187,7 +188,9 @@ server.listen(PORT, HOST, () => {
     console.log('  ВНИМАНИЕ: TRUST_PROXY выключен — за прокси все клиенты считаются одним адресом');
   }
   console.log(`  Почта: ${deliveryMode === 'smtp' ? 'реальная отправка через SMTP' : 'dev-инбокс → /dev/mailbox'}`);
-  console.log(`  Автоэскалация: порог ${Math.round(ESCALATION_MS / 3600000)} ч, фоновый процесс запущен`);
+  console.log(
+    `  Автоэскалация: порог ${Math.round(ESCALATION_MS / 3600000)} ч, таймеры стоят ${pauseLabel()} (МСК), фоновый процесс запущен`,
+  );
   if (seeded) {
     console.log(`  Создан главный администратор: ${seeded.login}`);
     if (seeded.isDefaultPassword) {

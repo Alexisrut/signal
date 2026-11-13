@@ -50,6 +50,11 @@
  * решения. Порог эскалации — 48 часов: для Желтого это суммарное время
  * в Желтом (возобновление продолжает отсчет), для возвращенного на доработку —
  * время с момента возврата.
+ *
+ * ВЫХОДНЫЕ. Все отрезки времени меряются рабочим календарем (work-calendar.js):
+ * с пятницы 18:00 до понедельника 09:00 часы стоят у всех сигналов разом —
+ * и срок эскалации, и время решения. `pausedMs` тоже хранится в рабочем
+ * времени, иначе выходные внутри паузы вычитались бы дважды.
  */
 
 import {
@@ -63,6 +68,7 @@ import {
   isStaffRole,
   isSuperadminRole,
 } from './constants.js';
+import { addWorkingMs, isWorkingTime, nextWorkStart, workingMs } from './work-calendar.js';
 
 const OPEN_STATUSES = STATUS_ORDER.filter((status) => !STATUS_META[status].terminal);
 
@@ -212,7 +218,7 @@ export function isPaused(status) {
   return Boolean(STATUS_META[status]?.paused);
 }
 
-/** Суммарное время, когда часы сигнала стояли. */
+/** Суммарное рабочее время, когда часы сигнала стояли (без выходных). */
 export function pausedMs(signal) {
   return Math.max(0, Number(signal?.pausedMs) || 0);
 }
@@ -223,7 +229,8 @@ function chronology(signal) {
 }
 
 /**
- * Сколько всего сигнал провел в статусе — по ленте истории.
+ * Сколько рабочего времени сигнал провел в статусе — по ленте истории.
+ * Выходная пауза не засчитывается.
  *
  * Каждая запись ленты хранит статус после события, поэтому лента и есть
  * последовательность отрезков «с этого момента сигнал был в таком-то статусе».
@@ -231,14 +238,14 @@ function chronology(signal) {
  */
 export function timeInStatus(signal, status, now = Date.now()) {
   const entries = chronology(signal);
-  if (!entries.length) return signal?.status === status ? Math.max(0, now - signal.createdAt) : 0;
+  if (!entries.length) return signal?.status === status ? workingMs(signal.createdAt, now) : 0;
 
   let total = 0;
   entries.forEach((entry, index) => {
     if (entry.to !== status) return;
     const next = entries[index + 1];
     const end = next ? next.at : signal.status === status ? now : entry.at;
-    total += Math.max(0, end - entry.at);
+    total += workingMs(entry.at, end);
   });
   return total;
 }
@@ -274,11 +281,36 @@ function workTimeInStatus(signal, status, now) {
  * в работу: входной контроль, проверка результата подрядчиком и закрытые
  * периоды в срок не засчитываются. У возвращенного на доработку — 48 часов
  * с момента возврата: на каждый круг доработки у ответственного свой срок.
+ * Выходные в срок не входят: срок, выпадающий на них, переносится
+ * на понедельник с тем же остатком часов.
  */
 export function escalationDueAt(signal, now = Date.now()) {
-  if (signal?.status === STATUS.YELLOW) return now + ESCALATION_MS - workTimeInStatus(signal, STATUS.YELLOW, now);
-  if (signal?.status === STATUS.RETURNED) return currentStatusSince(signal) + ESCALATION_MS;
+  if (signal?.status === STATUS.YELLOW) {
+    return addWorkingMs(now, ESCALATION_MS - workTimeInStatus(signal, STATUS.YELLOW, now));
+  }
+  if (signal?.status === STATUS.RETURNED) return addWorkingMs(currentStatusSince(signal), ESCALATION_MS);
   return null;
+}
+
+/**
+ * Сколько рабочего времени осталось до эскалации (отрицательное — просрочено);
+ * null — если эскалировать нечего. Именно это число показывает интерфейс:
+ * в выходные оно не уменьшается.
+ */
+export function escalationLeftMs(signal, now = Date.now()) {
+  const due = escalationDueAt(signal, now);
+  if (due === null) return null;
+  return due >= now ? workingMs(now, due) : -(now - due);
+}
+
+/** Выходная пауза: таймеры всех сигналов стоят. */
+export function isOffHours(now = Date.now()) {
+  return !isWorkingTime(now);
+}
+
+/** Когда закончится выходная пауза (или сам момент, если паузы нет). */
+export function timersResumeAt(now = Date.now()) {
+  return nextWorkStart(now);
 }
 
 export function isEscalationDue(signal, now = Date.now()) {
@@ -290,11 +322,12 @@ export function isEscalationDue(signal, now = Date.now()) {
  * Время решения: сколько сигнал реально прожил как проблема.
  * Пока часы стоят (доработка у подрядчика, закрытие), значение замирает
  * на моменте входа в этот статус; паузы прошлых периодов вычтены.
+ * Выходные не считаются: в них значение тоже замирает.
  */
 export function resolutionMs(signal, now = Date.now()) {
   if (!signal) return 0;
   const end = isPaused(signal.status) ? (signal.statusAt ?? signal.closedAt ?? signal.updatedAt) : now;
-  return Math.max(0, end - signal.createdAt - pausedMs(signal));
+  return Math.max(0, workingMs(signal.createdAt, end) - pausedMs(signal));
 }
 
 /* -------------------------------- возобновление -------------------------------- */

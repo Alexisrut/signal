@@ -777,6 +777,10 @@ code, .mono {
   font-weight: 600;
 }
 
+.escalation__pause {
+  color: var(--accent, #9dc0ff);
+}
+
 /* -------------------------------- легенда --------------------------------- */
 
 .legend {
@@ -2805,6 +2809,12 @@ button.link {
   border: 1px dashed var(--border-strong);
   color: var(--muted);
   font-size: 11px;
+}
+
+.timer__paused--weekend {
+  border-style: solid;
+  border-color: rgba(79, 140, 255, 0.45);
+  color: #9dc0ff;
 }
 
 .detail__timer {

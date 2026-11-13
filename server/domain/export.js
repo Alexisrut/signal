@@ -102,13 +102,13 @@ export async function buildSignalsWorkbook(filters, actor) {
     { header: 'Автор', key: 'author', width: 24 },
     { header: 'Создан', key: 'createdAt', width: 20, style: { numFmt: DATE_FORMAT } },
     { header: 'Обновлен', key: 'updatedAt', width: 20, style: { numFmt: DATE_FORMAT } },
-    { header: 'Время решения, ч', key: 'resolutionHours', width: 18 },
+    { header: 'Время решения, ч (без выходных)', key: 'resolutionHours', width: 20 },
     { header: 'Вложений', key: 'attachments', width: 12 },
     { header: 'Отчет о выполнении', key: 'report', width: 60 },
     { header: 'Комментарий выполнения', key: 'closingComment', width: 60 },
   ];
 
-  // То же время решения, что показывает интерфейс: за вычетом пауз,
+  // То же время решения, что показывает интерфейс: за вычетом пауз и выходных,
   // у активного сигнала — на момент формирования отчета.
   const now = Date.now();
   const resolutionHours = (row) => {
@@ -119,7 +119,7 @@ export async function buildSignalsWorkbook(filters, actor) {
         updatedAt: row.updated_at,
         closedAt: row.closed_at,
         statusAt: row.status_at,
-        pausedMs: row.paused_ms,
+        pausedMs: row.paused_work_ms ?? row.paused_ms,
       },
       now,
     );
